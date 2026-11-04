@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open EMS</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.css">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">Open EMS</div>
+  <div class="group">
+    <button id="btn-new" title="New project">New</button>
+    <button id="btn-open" title="Open a saved project">Open</button>
+    <button id="btn-save" title="Save project">Save</button>
+    <input id="set-name" value="site" size="10" title="Project name">
+  </div>
+  <div class="group settings">
+    <label>Start <input id="set-start" type="date" value="2025-01-01"></label>
+    <label>Days <input id="set-days" type="number" value="7" min="1" step="1" style="width:4.5em"></label>
+    <label>Resolution <select id="set-freq"><option>1h</option><option>30min</option><option>15min</option></select></label>
+    <label>TZ <input id="set-tz" value="Europe/Copenhagen" size="15"></label>
+    <label>CO₂ price <input id="set-co2" type="number" placeholder="€/t" style="width:5em"></label>
+    <label>CO₂ cap <input id="set-co2cap" type="number" placeholder="t" style="width:5em"></label>
+  </div>
+  <div class="group">
+    <button id="btn-validate">Validate</button>
+    <button id="btn-run" class="primary">▶ Run</button>
+    <button id="btn-config" title="Download the system config (YAML) to run headless">Export config</button>
+  </div>
+  <div class="group"><button id="btn-tutorial" title="Step-by-step guide: build a small site">🎓 Tutorial</button></div>
+</header>
+<main>
+  <aside id="palette">
+    <section>
+      <h3>Nodes</h3>
+      <div class="pal-item bus" draggable="true" data-kind="bus">⬤ Bus</div>
+    </section>
+    <section id="inputs">
+      <h3>Inputs</h3>
+      <label class="pal-item data upload">⤒ Upload CSV data<input id="file-upload" type="file" accept=".csv" hidden></label>
+      <div id="dataset-list"></div>
+    </section>
+    <div id="palette-components"></div>
+    <section><h3>Presets</h3><div id="palette-presets"></div></section>
+    <p class="hint">Drag blocks onto the canvas. Wire energy from components to a bus <b>supply</b>, from a bus
+      <b>withdraw</b> to components, and inputs to the grey parameter connectors. Grids and storages have one
+      <b>⇄</b> connector for both directions.</p>
+  </aside>
+  <div id="canvas-wrap">
+    <div id="drawflow"></div>
+    <div id="zoom"><button data-z="in">+</button><button data-z="reset">⟳</button><button data-z="out">−</button></div>
+    <div id="status"></div>
+  </div>
+  <aside id="side">
+    <div id="tutorial" class="hidden"></div>
+    <div id="panel"><div class="empty">Select a block to edit its properties.</div></div>
+  </aside>
+</main>
+<section id="results" class="collapsed">
+  <div class="res-head">
+    <strong>Results</strong>
+    <nav id="res-tabs">
+      <button data-tab="summary" class="active">Summary</button>
+      <button data-tab="costs">Costs</button>
+      <button data-tab="balance">Bus balance</button>
+      <button data-tab="component">Component</button>
+    </nav>
+    <span id="res-meta"></span>
+    <a id="res-download" href="#" download>Download CSV</a>
+    <button id="res-toggle">▴</button>
+  </div>
+  <div class="res-body">
+    <div class="tab" data-tab="summary"><div id="res-summary"></div></div>
+    <div class="tab hidden" data-tab="costs"><div id="plot-costs" class="plot"></div></div>
+    <div class="tab hidden" data-tab="balance"><select id="sel-bus"></select><div id="plot-balance" class="plot"></div></div>
+    <div class="tab hidden" data-tab="component"><select id="sel-comp"></select><div id="plot-comp" class="plot"></div></div>
+  </div>
+</section>
+<div id="toast"></div>
+<script src="/static/blocks.js"></script>
+<script src="/static/panel.js"></script>
+<script src="/static/results.js"></script>
+<script src="/static/wiring.js"></script>
+<script src="/static/tutorial.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
