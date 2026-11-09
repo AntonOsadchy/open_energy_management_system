@@ -1,8 +1,10 @@
 """Serialisation of an EnergySystem to/from a plain dict (YAML/JSON).
 
 Time series are never written inline. A series value is a reference ``{"series": "dataset:column"}``
-into a CSV listed under ``datasets``. :func:`to_config` writes every pandas Series it meets into a
-dataset folder and replaces it by such a reference, so ``from_config(to_config(es))`` round-trips.
+into a CSV listed under ``datasets``, or a daily profile ``{"daily": [v0, v1, ...]}`` (24, 48 or 96 values from
+midnight, repeated on every day by local time; see :class:`oems.timeseries.DailyProfile`). :func:`to_config`
+writes every pandas Series it meets into a dataset folder and replaces it by such a reference, so
+``from_config(to_config(es))`` round-trips.
 
 Format::
 
@@ -17,6 +19,12 @@ Format::
       - {type: Converter, name: hp, inputs: {el: 1}, outputs: {heat: {series: "site:cop90"}}}
     emission_policy: {co2: {price: 85}}
     solver: {time_limit: 600, tie_break: 0.01}
+    lifetime: {mode: optimise, years: 15, discount_rate: 0.07, inflation: 0.02}   # optional: lifetime sizing
+
+With ``lifetime.mode: optimise`` the ``time`` section is the base period. ``lifetime.model: weighted`` (default) models
+it once, weighted for all ``years``; ``model: full`` repeats it ``years`` times into one grid and every series and
+inline list of one value per base-period step is tiled (see ``oems.sizing``). A ``lifetime``
+without ``mode`` is a myopic multi-year run (``oems.degradation``), handled by its runner, not here.
 """
 
 from __future__ import annotations
@@ -35,15 +43,18 @@ from .components.tariffs import TARIFF_REGISTRY
 from .costs import FlowCost
 from .exceptions import ValidationError
 from .schema import SPEC_KEY, Kind
+from .sizing import self_sufficiency_target, stack_grid, tile_list, tile_series
 from .system import EnergySystem
-from .timeseries import TimeGrid, load_csv
+from .timeseries import DailyProfile, TimeGrid, load_csv
 
 
 # ------------------------------------------------------------------ loading
 class SeriesStore:
     """Resolves ``dataset:column`` references, loading CSVs lazily."""
 
-    def __init__(self, datasets: dict | None = None, base_dir: Path | None = None, tz=None, frames=None):
+    def __init__(self, datasets: dict | None = None, base_dir: Path | None = None, tz=None, frames=None,
+                 horizon=None):
+        self.horizon = horizon      # sizing.Horizon: series are tiled over a one-shot lifetime run
         self.paths = dict(datasets or {})
         self.base = Path(base_dir or ".")
         self.tz = tz
@@ -61,14 +72,19 @@ class SeriesStore:
         df = self.frames[ds]
         if col not in df.columns:
             raise ValidationError(f"dataset {ds!r} has no column {col!r}")
-        return df[col].dropna()  # columns of mixed-resolution datasets have gaps
+        s = df[col].dropna()  # columns of mixed-resolution datasets have gaps
+        return tile_series(s, self.horizon, ref) if self.horizon is not None else s
 
 
 def _load_value(v, store: SeriesStore):
     if isinstance(v, dict) and set(v) == {"series"}:
         return store.get(v["series"])
+    if isinstance(v, dict) and set(v) == {"daily"}:
+        return DailyProfile(v["daily"])
     if isinstance(v, str) and v in ("inf", "+inf"):
         return float("inf")
+    if isinstance(v, list) and store.horizon is not None:
+        return tile_list(v, store.horizon)
     return v
 
 
@@ -130,7 +146,21 @@ def from_config(cfg: dict | str | Path, base_dir: str | Path | None = None,
         cfg = yaml.safe_load(path.read_text())
     time = cfg.get("time") or {}
     grid = grid_from_config(time) if time else None
-    store = SeriesStore(cfg.get("datasets"), Path(base_dir or "."), tz=time.get("tz"), frames=frames)
+    life = cfg.get("lifetime") or {}
+    horizon = None
+    if life.get("mode") == "optimise":     # one-shot lifetime run: the base period repeated year after year
+        if grid is None:
+            raise ValidationError("a lifetime optimisation needs a time section (the base period)")
+        model = life.get("model", "weighted")
+        if model not in ("weighted", "full"):
+            raise ValidationError(f"lifetime.model {model!r}: use 'weighted' (one year for all) or 'full'")
+        grid = stack_grid(grid, life.get("years", 1), float(life.get("discount_rate") or 0),
+                          weighted=model == "weighted", inflation=float(life.get("inflation") or 0))
+        horizon = grid.horizon
+        horizon.hurdle_limits = list(life.get("hurdle_limits") or [])   # set by sizing.optimise_lifetime
+        horizon.self_sufficiency = self_sufficiency_target(cfg)
+    store = SeriesStore(cfg.get("datasets"), Path(base_dir or "."), tz=time.get("tz"), frames=frames,
+                        horizon=horizon)
     es = EnergySystem(grid, name=cfg.get("name", "oems"))
     carriers = {}
     for c in cfg.get("carriers", []):
@@ -176,6 +206,8 @@ class _SeriesSink:
 def _dump_value(v, key, sink: _SeriesSink):
     if isinstance(v, pd.Series):
         return sink.add(key, v)
+    if isinstance(v, DailyProfile):
+        return {"daily": list(v.values)}
     if isinstance(v, Bus):
         return v.name
     if isinstance(v, np.ndarray):

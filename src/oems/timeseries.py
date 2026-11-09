@@ -52,6 +52,40 @@ class AlignmentRecord:
     method: str
 
 
+class DailyProfile:
+    """One day of values (24 hourly, 48 half-hourly, 96 quarter-hourly …, starting at midnight) repeated on every
+    day of the grid by local time of day. A model step gets the mean of the profile over the minutes it covers, so
+    an hourly profile holds on a 15-min grid and a 15-min profile is averaged on an hourly one. Written in a config
+    as ``{"daily": [v0, v1, ...]}``."""
+
+    def __init__(self, values):
+        try:
+            self.values = [float(v) for v in values]
+        except (TypeError, ValueError) as err:
+            raise ValidationError(f"daily profile: expected a list of numbers, got {values!r}") from err
+        n = len(self.values)
+        if n == 0 or 1440 % n:
+            raise ValidationError(f"daily profile: {n} values do not split a day evenly (use e.g. 24, 48 or 96)")
+        if not np.all(np.isfinite(self.values)):
+            raise ValidationError("daily profile: values must be finite numbers")
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, DailyProfile) and self.values == other.values
+
+    def __repr__(self) -> str:
+        return f"DailyProfile({len(self.values)} values)"
+
+    def on(self, grid: "TimeGrid") -> np.ndarray:
+        if not grid.is_datetime:
+            raise ValidationError("daily profile: needs a dated time grid (time: start, periods, freq)")
+        local = grid._local_naive()
+        start = local.hour.to_numpy() * 60 + local.minute.to_numpy()
+        length = int(round(grid.step_hours * 60))
+        per_minute = np.repeat(self.values, 1440 // len(self.values))
+        cum = np.concatenate([[0.0], np.cumsum(np.tile(per_minute, 2))])   # two days: a step may cross midnight
+        return (cum[start + length] - cum[start]) / length
+
+
 class TimeGrid:
     """Regular model time grid.
 
@@ -66,6 +100,9 @@ class TimeGrid:
         Step length in hours. Only needed for a ``RangeIndex``.
     weights:
         Cost/emission weight per step (default 1). Weights scale costs but not physics.
+    cost_weights:
+        Weight of the costs alone (default ``weights``), e.g. the discount factor of each step in a lifetime run
+        (see :mod:`oems.sizing`). Emissions and energy totals keep ``weights``.
 
     ``end`` is exclusive: ``TimeGrid(start="2025-01-01", end="2025-01-02", freq="1h")`` has 24 steps.
     """
@@ -81,6 +118,7 @@ class TimeGrid:
         tz: str | None = None,
         dt: float | None = None,
         weights=None,
+        cost_weights=None,
     ):
         if index is None:
             if start is None or freq is None or (end is None and periods is None):
@@ -122,6 +160,11 @@ class TimeGrid:
         self.w = as_param(1.0 if weights is None else weights, self, kind="ratio", name="weights")
         if np.any(self.w < 0):
             raise ValidationError("TimeGrid weights must be non-negative")
+        self.cw = self.w.copy() if cost_weights is None else as_param(cost_weights, self, kind="ratio",
+                                                                         name="cost_weights")
+        if np.any(self.cw < 0):
+            raise ValidationError("TimeGrid cost weights must be non-negative")
+        self.horizon = None     # sizing.Horizon of a one-shot lifetime run (the base period repeated year by year)
 
     # ------------------------------------------------------------------ properties
     @property
@@ -221,7 +264,7 @@ def as_param(
 ) -> np.ndarray:
     """Coerce ``value`` to a float array aligned to ``grid``.
 
-    Accepts a scalar, a sequence/array of length ``grid.n`` or a pandas Series. A Series with a
+    Accepts a scalar, a sequence/array of length ``grid.n``, a :class:`DailyProfile` or a pandas Series. A Series with a
     DatetimeIndex at another resolution is resampled according to ``kind`` (see
     ``SERIES_KINDS``) unless ``strict`` is set. Every resample is appended to ``report``.
     """
@@ -240,6 +283,10 @@ def as_param(
         return as_param(value.iloc[:, 0], grid, kind=kind, name=name, owner=owner, strict=strict, report=report)
     elif isinstance(value, pd.Series):
         arr = _align_series(value, grid, kind, label, strict, report, owner, name)
+    elif isinstance(value, DailyProfile):
+        arr = value.on(grid)
+        if kind == "bool":
+            arr = (arr > 0).astype(float)
     else:
         arr = np.asarray(value, dtype=float)
         if arr.shape != (grid.n,):

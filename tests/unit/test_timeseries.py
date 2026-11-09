@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 import oems
-from oems.timeseries import TimeGrid, as_param, energy_to_power, infer_resolution, load_csv
+from oems.config import from_config, to_config
+from oems.timeseries import DailyProfile, TimeGrid, as_param, energy_to_power, infer_resolution, load_csv
 
 
 # ---------------------------------------------------------------- TimeGrid
@@ -174,3 +175,45 @@ def test_load_csv_and_infer_resolution(tmp_path):
     df = load_csv(p, tz="Europe/Copenhagen")
     assert list(df.columns) == ["price", "load"] and str(df.index.tz) == "Europe/Copenhagen"
     assert infer_resolution(df.index) == "15min"
+
+
+# ---------------------------------------------------------------- daily profiles
+def test_daily_profile_repeats_on_every_day_by_local_time():
+    """A 24-value profile gives step h of every day the value of hour h of the local clock; on the spring DST day
+    (23 h) the 02:00 value is skipped and the next midnight is still value 0."""
+    g = TimeGrid(start="2025-03-29", periods=72, freq="1h", tz="Europe/Copenhagen")
+    a = as_param(DailyProfile(range(24)), g)
+    assert a[:24].tolist() == list(range(24)) and a[24:26].tolist() == [0, 1]
+    assert a[24 + 2] == 3 and a[24 + 23] == 0           # 30 Mar: 01:00 -> 03:00, then midnight after 23 steps
+
+
+def test_daily_profile_holds_on_finer_and_averages_on_coarser_grids():
+    """An hourly profile holds for the four quarter hours of each hour; a 96-value (15-min) profile is averaged
+    over the four quarter hours of each hourly step."""
+    a = as_param(DailyProfile(range(24)), TimeGrid(start="2025-01-01", periods=8, freq="15min"))
+    assert a.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    b = as_param(DailyProfile(range(96)), TimeGrid(start="2025-01-01", periods=3, freq="1h"))
+    assert b.tolist() == [1.5, 5.5, 9.5]
+
+
+@pytest.mark.parametrize("values, msg", [([1.0] * 25, "split a day"), ([], "split a day"), (["x"] * 24, "numbers"),
+                                         ([float("nan")] * 24, "finite")])
+def test_bad_daily_profiles_are_rejected(values, msg):
+    """A profile needs a whole number of equal steps per day (24, 48, 96 …) of finite numbers."""
+    with pytest.raises(oems.ValidationError, match=msg):
+        DailyProfile(values)
+
+
+def test_daily_profile_in_a_config_round_trips():
+    """`{"daily": [...]}` in a config sets a series parameter (the demand follows the profile on both days) and
+    `to_config` writes it back in the same form."""
+    day = [1.0] * 8 + [2.0] * 12 + [1.0] * 4
+    cfg = {"name": "s", "time": {"start": "2025-01-01", "periods": 48, "freq": "1h"},
+           "carriers": [{"name": "electricity", "kind": "electricity"}], "buses": [{"name": "el", "carrier": "electricity"}],
+           "components": [{"type": "GridConnection", "name": "g", "bus": "el", "import_price": 50},
+                          {"type": "Demand", "name": "d", "bus": "el", "profile": {"daily": day}}]}
+    es, _ = from_config(cfg)
+    res = es.solve()
+    assert np.allclose(res.flows[("d", "in", "el", "in")].to_numpy(), day * 2)
+    out, series = to_config(es)
+    assert next(c for c in out["components"] if c["name"] == "d")["profile"] == {"daily": day} and not series

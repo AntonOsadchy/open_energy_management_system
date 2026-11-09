@@ -54,7 +54,8 @@ def test_ramp_limit():
     """Link el->heat with ramp 0.5 MW/h, heat demand [0, 1, 1]; an expensive heat source covers the
     rest. The link can reach only 0.5 MW in hour 1, so the backup supplies 0.5 MWh (1000 EUR/MWh)."""
     es, el, heat = heat_el_system(grid_h(3))
-    es.add(oems.GridConnection("dso", el, import_price=10), oems.GridConnection("backup", heat, import_price=1000),
+    es.add(oems.GridConnection("dso", el, import_price=10),
+           oems.GridConnection("backup", heat, import_price=1000, max_export=0),   # import-only: no heat dumping
            P.link("eb", el, heat, ramp=0.5), oems.Demand("hd", heat, profile=[0, 1, 1]))
     res = es.solve(tie_break=0)
     assert np.allclose(flow(res, "eb", "in_el"), [0, 0.5, 1.0])

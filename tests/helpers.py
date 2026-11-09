@@ -82,3 +82,79 @@ def flow(res, component, port):
 
 def state(res, component, name):
     return res.states[(component, name)].to_numpy()
+
+
+FAKE_CURVES = {1.0: [0.95, 0.9, 0.8], 2.0: [0.9, 0.8]}
+
+
+def fake_bess_db(db, series=None, tariffs=None):
+    """Make a ``BessDb`` answer its fixed queries from in-memory data instead of Postgres.
+
+    ``series``: {(zone, series_type_code): pd.Series with UTC index}; ``tariffs``: {(zone, connection_type, column): …}.
+    Default data: DK_1 day-ahead price that is hourly until 2025-01-01 12:00 UTC and 15-min afterwards (as after the
+    market moved to 15-min products), 2m temperature in K, an N1 A-high consumption tariff of 40 €/MWh, and a
+    modelled 2 MWp PV system ``SITE`` producing 0.8 MW from 10:00 to 14:00 UTC each day (capacity factor 0.4), and
+    the degradation profile ``short`` (``FAKE_CURVES``: 3 years at 1 cycle/day, 2 at 2 cycles/day, ending at 0.8).
+    """
+    import pandas as pd
+
+    if series is None:
+        h = pd.date_range("2024-12-20", "2025-01-01 11:00", freq="1h", tz="UTC")
+        q = pd.date_range("2025-01-01 12:00", "2025-01-15", freq="15min", tz="UTC", inclusive="left")
+        price = pd.concat([pd.Series(50.0 + 10 * (h.hour >= 12), index=h),
+                           pd.Series(50.0 + 10 * (q.hour >= 12) + 4 * (q.minute // 15), index=q)])
+        temp_idx = pd.date_range("2024-12-20", "2025-01-15", freq="1h", tz="UTC", inclusive="left")
+        series = {("DK_1", "da_price"): price, ("DK_1", "temperature_2m_k"): pd.Series(278.15, index=temp_idx)}
+    if tariffs is None:
+        idx = pd.date_range("2024-12-20", "2025-01-15", freq="1h", tz="UTC", inclusive="left")
+        tariffs = {("DK_1", "n1_a_high", "consumption_tariff_eur_mwh"): pd.Series(40.0, index=idx)}
+    empty = pd.Series(dtype=float, index=pd.DatetimeIndex([], tz="UTC"))
+    pv_idx = pd.date_range("2024-12-20", "2025-01-15", freq="1h", tz="UTC", inclusive="left")
+    pv = pd.Series(np.where((pv_idx.hour >= 10) & (pv_idx.hour < 14), 0.8, 0.0), index=pv_idx)
+
+    def rows(sql, params=(), database=None):
+        if sql == "select 1":
+            return [(1,)]
+        if "from pg_database" in sql:
+            return [("postgres",), ("staging",)]
+        if "from bidding_zones" in sql:
+            return [("DK_1", "Denmark West", "Europe/Copenhagen"), ("DE_LU", "Germany-Luxembourg", "Europe/Berlin")]
+        if "from series_types" in sql:
+            return [("gas_ttf_front_month", "commodity", "EUR/MWh", "Gas: TTF front month"),
+                    ("gen_solar", "generation", "MW", "Generation: Solar"),
+                    ("da_price", "price", "EUR/MWh", "Day-ahead market price"),
+                    ("temperature_2m_k", "weather", "K", "Temperature: 2m air temperature")]
+        if "from tariff_dso_connection_types" in sql:
+            return [("no_tariffs", "No tariffs"), ("n1_a_high", "N1 A-high")]
+        if "from bess_degradation_curves c" in sql:
+            return [("short", "Short test profile", [1.0, 2.0], 3)]
+        if "from bess_degradation_curves where" in sql:
+            return ([(r, y + 1, v) for r, vals in FAKE_CURVES.items() for y, v in enumerate(vals)]
+                    if params == ("short",) else [])
+        if "from solar_pv_scenarios" in sql:
+            return [("SITE", "DK_1", "Site roof", 2.0, 25.0, 180.0, None, True, 55.8, 11.4, "test system")]
+        if "'gen_solar_modeled'" in sql:
+            cap, zone, source, lo, hi = params
+            s = (pv if (zone, source) == ("DK_1", "SITE") else empty) / cap
+        elif "from market_timeseries" in sql:
+            zone, code, lo, hi = params
+            s = series.get((zone, code), empty)
+        elif "from tariffs" in sql:
+            zone, ct, lo, hi = params
+            col = sql.split("select ts, ")[1].split(" ")[0]
+            s = tariffs.get((zone, ct, col), empty)
+        else:
+            raise AssertionError(f"unexpected query {sql}")
+        s = s[(s.index >= pd.Timestamp(lo)) & (s.index < pd.Timestamp(hi))]
+        return list(zip(s.index.to_pydatetime(), s.tolist(), strict=True))
+
+    db._rows = rows
+    db._options = None
+    return db
+
+
+def use_fake_bess_db(app, **kw):
+    """Route every DB connection of a UI app to :func:`fake_bess_db`."""
+    from oems.ui.dbsource import BessDb
+
+    app.state.db_factory = lambda conn: fake_bess_db(BessDb(conn, "pw"), **kw)

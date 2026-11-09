@@ -41,6 +41,22 @@ def test_co2_breakeven_price(delta, winner):
     assert flow(res, other, "out_heat").sum() == pytest.approx(0.0, abs=1e-9)
 
 
+@pytest.mark.parametrize("delta, winner", [(-5.0, "gb"), (5.0, "hp")])
+def test_grid_co2_price_matches_system_policy(delta, winner):
+    """A co2_price on each grid connection prices emissions like the system policy: same break-even pi*,
+    same objective; a grid price replaces (does not add to) the policy price."""
+    pi = PI_STAR + delta
+    es = _hp_vs_boiler()
+    for name in ("dso", "gas_grid"):
+        es.components[name].co2_price = pi
+    res = es.solve(tie_break=0)
+    assert_invariants(res)
+    assert flow(res, winner, "out_heat").sum() == pytest.approx(2.0)
+    assert res.objective == pytest.approx(_hp_vs_boiler(co2_price=pi).solve(tie_break=0).objective)
+    es.set_emission_policy("co2", price=1000)
+    assert es.solve(tie_break=0).objective == pytest.approx(res.objective)
+
+
 def test_emissions_are_counted_at_the_boundary():
     """Without a policy the boiler is cheaper; 2 MWh heat / 0.9 = 2.222 MWh gas * 0.2 t/MWh = 0.444 t."""
     res = _hp_vs_boiler(report_only=True).solve(tie_break=0)
@@ -98,3 +114,12 @@ def test_flow_cost_refund_category():
            oems.Demand("hd", heat, profile=1))
     res = es.solve(tie_break=0)
     assert res.cost_by_category["TAX"] == pytest.approx(-5.0)
+
+
+def test_a_cap_on_a_gas_nothing_emits_is_met_and_ignored():
+    """A CO2 cap on a site without any CO2 factor (0 t <= cap) solves as without the cap, with no cap dual."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, import_price=50), oems.Demand("load", el, profile=1.0))
+    es.set_emission_policy("co2", cap=10)
+    res = es.solve()
+    assert res.total_cost == pytest.approx(100) and res.emission_shadow_price == {}

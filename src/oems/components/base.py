@@ -18,7 +18,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import KW_ONLY, dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import pyomo.environ as pyo
@@ -66,7 +66,11 @@ class Resolvable:
         owner = owner or getattr(self, "name", type(self).__name__)
         r = SimpleNamespace()
         errors: list[str] = []
+        sized = set(getattr(self, "SIZED", ())) if getattr(self, "optimise_size", False) else set()
         for fname, sp in specs(self).items():
+            if fname in sized:          # the size is a decision variable: a value given for it is not used
+                setattr(r, fname, None)
+                continue
             try:
                 setattr(r, fname, resolve_value(getattr(self, fname), sp, grid, system, report, owner, fname))
             except ValidationError as e:
@@ -169,12 +173,17 @@ class BuildContext:
         self.T = m.T
         self.dt = grid.dt
         self.w = grid.w
-        self.wdt = grid.w * grid.dt
+        # emissions: a weighted lifetime copy stands for several years (sizing.Horizon.represents)
+        self.wdt = grid.w * grid.dt * (grid.horizon.represents if grid.horizon is not None else 1.0)
+        self.cw = grid.cw
+        self.cwdt = grid.cw * grid.dt
+        self.horizon = grid.horizon
         self.tie_break = float(tie_break)
 
-    def wsum(self, coef, view) -> object:
-        """sum_t w_t * dt_t * coef_t * view[t] (skips zero coefficients)."""
-        c = np.broadcast_to(np.asarray(coef, dtype=float), (self.n,)) * self.wdt
+    def wsum(self, coef, view, physical: bool = False) -> object:
+        """Cost sum_t cw_t * dt_t * coef_t * view[t] (skips zero coefficients); ``physical`` weighs with ``w``
+        instead of the cost weights (emissions, energy)."""
+        c = np.broadcast_to(np.asarray(coef, dtype=float), (self.n,)) * (self.wdt if physical else self.cwdt)
         nz = np.flatnonzero(c)
         if nz.size == 0:
             return 0.0
@@ -212,6 +221,8 @@ class Component(Resolvable, ABC):
     type_name = "Component"
     palette_group = "Other"
     icon = "box"
+    #: Size fields that become decision variables with ``optimise_size`` (not required then)
+    SIZED: ClassVar[tuple] = ()
 
     # --- structure -----------------------------------------------------------------
     @abstractmethod
@@ -239,8 +250,31 @@ class Component(Resolvable, ABC):
         """Time-indexed block variables reported as states."""
         return {}
 
+    def derived_states(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Extra reported states computed from the solved ``states`` (``values``: state name -> array)."""
+        return {}
+
+    def solved_sizes(self, blk: pyo.Block) -> dict[str, tuple[float, str]]:
+        """Optimised sizes after the solve, ``{quantity: (value, unit)}``; also writes them into ``self.r`` so the
+        reporting works as for a fixed size. Empty unless the size was optimised."""
+        return {}
+
+    def check_sizing(self, grid: TimeGrid, costs: dict[str, object]) -> None:
+        """Checks of an optimised size: a lifetime run (see ``oems.sizing``) and the given CAPEX / OPEX
+        (``costs``: label -> value, None = missing)."""
+        if grid.horizon is None:
+            raise ValidationError(f"{self.name}: an optimised size needs a lifetime optimisation run (the CAPEX is "
+                                  "paid back over the lifetime)")
+        missing = [k for k, v in costs.items() if v is None]
+        if missing:
+            raise ValidationError(f"{self.name}: {' and '.join(missing)} required when the size is optimised")
+
     def default_emission_factors(self) -> dict[str, dict[str, np.ndarray]]:
         """Emission factors applied when the user gives none (grid connections use carrier defaults)."""
+        return {}
+
+    def emission_prices(self) -> dict[str, np.ndarray]:
+        """Own emission prices (gas -> EUR/t per step); they replace the system policy price for this component."""
         return {}
 
     # --- generic options -------------------------------------------------------------

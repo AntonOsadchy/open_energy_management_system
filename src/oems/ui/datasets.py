@@ -45,6 +45,18 @@ class DatasetStore:
         self._cache[ds_id] = df
         return {**meta, "preview": self.preview(ds_id)}
 
+    def add_frame(self, ds_id: str, name: str, df: pd.DataFrame, tz: str | None = None, **extra) -> dict:
+        """Store a frame produced by the app (e.g. a DB connector series) under a fixed id, replacing any old one."""
+        path = self.dir / f"{ds_id}.csv"
+        df.to_csv(path, index_label="time")
+        meta = {"id": ds_id, "name": name, "file": path.name, "columns": list(df.columns),
+                "resolution": infer_resolution(df.index), "start": str(df.index[0]), "end": str(df.index[-1]),
+                "rows": len(df), "tz": tz, **extra}
+        self.index[ds_id] = meta
+        self._save()
+        self._cache[ds_id] = df
+        return meta
+
     def frame(self, ds_id: str) -> pd.DataFrame:
         if ds_id not in self._cache:
             meta = self.index[ds_id]
@@ -71,7 +83,8 @@ class DatasetStore:
         return {k: str(self.dir / v["file"]) for k, v in self.index.items()}
 
     def list(self) -> list[dict]:
-        return list(self.index.values())
+        """Uploaded datasets (series cached from the database are internal)."""
+        return [m for m in self.index.values() if m.get("origin") != "db"]
 
     def delete(self, ds_id: str) -> None:
         meta = self.index.pop(ds_id, None)

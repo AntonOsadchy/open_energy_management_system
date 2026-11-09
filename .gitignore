@@ -12,3 +12,5 @@ out/
 projects/
 oems_workspace/
 examples/data/
+.env
+db.json

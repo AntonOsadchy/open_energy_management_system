@@ -18,7 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "httpx>=0.27"]
-ui = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+ui = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9", "openpyxl>=3.1"]
+db = ["psycopg[binary]>=3.1"]
+cloud = ["modal>=1.0"]                 # solve runs on a cloud machine (oems.cloud)
 
 [project.scripts]
 oems-app = "oems.ui.server:main"
@@ -44,3 +46,4 @@ ignore = ["E741", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
+"src/oems/ui/report.py" = ["E501"]   # HTML/CSS template lines

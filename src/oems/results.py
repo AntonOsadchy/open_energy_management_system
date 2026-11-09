@@ -54,12 +54,20 @@ class Results:
         self.flows = pd.DataFrame(np.column_stack(data) if data else np.empty((n, 0)), index=self.index,
                                   columns=pd.MultiIndex.from_tuples(cols, names=["component", "port", "bus",
                                                                                  "direction"]))
+        # optimised sizes (lifetime runs), written back into the components so the reporting below can use them
+        self.sizes = {}
+        for name, comp in system.components.items():
+            solved = comp.solved_sizes(meta.blocks[name])
+            if solved:
+                self.sizes[name] = solved
         # states
         scols, sdata = [], []
         for name, comp in system.components.items():
-            for sname, var in comp.states(meta.blocks[name]).items():
+            values = {sname: _values(var, n) for sname, var in comp.states(meta.blocks[name]).items()}
+            values.update(comp.derived_states(values))          # e.g. storage soc = e / e_max
+            for sname, v in values.items():
                 scols.append((name, sname))
-                sdata.append(_values(var, n))
+                sdata.append(v)
         self.states = pd.DataFrame(np.column_stack(sdata) if sdata else np.empty((n, 0)), index=self.index,
                                    columns=pd.MultiIndex.from_tuples(scols, names=["component", "state"]))
         # costs
@@ -77,7 +85,7 @@ class Results:
         self.emissions_t = pd.DataFrame(
             {g: [pyo.value(m.Et[g, t]) for t in range(n)] for g in meta.gases}, index=self.index)
         # duals
-        wdt = self.grid.w * self.grid.dt
+        wdt = self.grid.cw * self.grid.dt         # cost weights: undiscounted prices in a lifetime run
         duals = info.duals
         sp = {}
         for b in m.B:
@@ -123,6 +131,78 @@ class Results:
         rows = self._cost_rows
         return float(rows.loc[~rows["category"].isin([c.value for c in ARTIFICIAL]), "EUR"].sum())
 
+    def step_costs(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """The objective's cost terms split by time step, read from the solved model's own cost expressions.
+
+        Returns ``(per_step, period)``: ``per_step`` is time x (component, category) in EUR (revenue negative), built
+        from every term whose variable belongs to a time step (energy charges and credits, flow, operation,
+        degradation, flexibility and CO2 costs, tie-break, slack); ``period`` lists the rest (component, category,
+        EUR): charges per billing period or interval such as peak, capacity-overrun and fixed charges. For every
+        (component, category): ``per_step.sum() + period == costs`` (up to rounding).
+        """
+        if getattr(self, "_step_costs", None) is not None:
+            return self._step_costs
+        from pyomo.repn import generate_standard_repn
+
+        m, n = self.model, self.grid.n
+        cols, data, period = [], [], []
+        for (c, k), expr in self.meta.cost_exprs.items():
+            per = np.zeros(n)
+            rest = 0.0
+            repn = generate_standard_repn(expr, compute_values=True)
+            rest += float(pyo.value(repn.constant)) if repn.constant is not None else 0.0
+            for coef, var in zip(repn.linear_coefs, repn.linear_vars, strict=True):
+                v = (var.value or 0.0) * float(coef)
+                t = _step_of(var, m.T)
+                if t is None:
+                    rest += v
+                else:
+                    per[t] += v
+            cols.append((c, k))
+            data.append(per)
+            if abs(rest) > 1e-9:
+                period.append((c, k, rest))
+        per_step = pd.DataFrame(np.column_stack(data) if data else np.empty((n, 0)), index=self.index,
+                                columns=pd.MultiIndex.from_tuples(cols, names=["component", "category"]))
+        self._step_costs = (per_step, pd.DataFrame(period, columns=["component", "category", "EUR"]))
+        return self._step_costs
+
+    def profit(self) -> pd.DataFrame:
+        """System profit per time step [EUR] = revenue - costs, consistent with ``total_cost``: the per-step part
+        of every real cost category (the artificial TIEBREAK and SLACK left out). Columns: ``revenue``, one
+        ``cost <CATEGORY>`` per other category with step-level terms, ``profit`` and ``profit_cumulative``.
+        Charges per billing period (peak, fixed) are not in the steps: ``step_costs()[1]``; so
+        ``profit.sum() - period charges == -total_cost``."""
+        per_step, _ = self.step_costs()
+        real = per_step.loc[:, ~per_step.columns.get_level_values("category").isin([c.value for c in ARTIFICIAL])]
+        by_cat = real.T.groupby(level="category").sum().T
+        out = pd.DataFrame(index=self.index)
+        if "REVENUE" in by_cat:
+            out["revenue"] = -by_cat.pop("REVENUE")
+        for cat in by_cat.columns:
+            out[f"cost {cat}"] = by_cat[cat]
+        out["profit"] = -real.sum(axis=1)
+        out["profit_cumulative"] = out["profit"].cumsum()
+        return out + 0.0
+
+    #: Port pairs that move energy in opposite directions; their ``exclusive`` option is an LP relaxation, so both
+    #: can be non-zero in the same step when that lowers cost (e.g. burning energy at negative prices)
+    OPPOSITE_PORTS = ((GridConnection, ("import", "export")), (Storage, ("charge", "discharge")))
+
+    def simultaneous(self, tol: float = 1e-6) -> pd.DataFrame:
+        """Overlap of opposite flows per step [MW] = min(import, export) for grid connections and min(charge,
+        discharge) for storages; time x (component, "a & b"). Zero where only one direction flows (below ``tol``)."""
+        cols, data = [], []
+        flows = self.flows.sort_index(axis=1)
+        for name, comp in self.system.components.items():
+            for cls, (a, b) in self.OPPOSITE_PORTS:
+                if isinstance(comp, cls):
+                    ov = np.minimum(flows[(name, a)].iloc[:, 0].to_numpy(), flows[(name, b)].iloc[:, 0].to_numpy())
+                    cols.append((name, f"{a} & {b}"))
+                    data.append(np.where(ov > tol, ov, 0.0))
+        return pd.DataFrame(np.column_stack(data) if data else np.empty((self.grid.n, 0)), index=self.index,
+                            columns=pd.MultiIndex.from_tuples(cols, names=["component", "ports"]))
+
     @property
     def cost_by_category(self) -> pd.Series:
         return self._cost_rows.groupby("category")["EUR"].sum()
@@ -164,10 +244,28 @@ class Results:
             out[key] = sign * sub[(comp, port, direction)]
         df = pd.DataFrame(out, index=self.index)
         if bus in self.meta.slack_buses:
-            n = self.grid.n
-            df["slack"] = (_values(_B2View(self.model.slack_pos, bus), n)
-                           - _values(_B2View(self.model.slack_neg, bus), n))
+            df["slack"] = self._slack_net(bus)
         return df
+
+    def _slack_net(self, bus: str) -> np.ndarray:
+        kept = getattr(self, "_slack", None)
+        if kept is not None:
+            return kept[bus]
+        n = self.grid.n
+        return _values(_B2View(self.model.slack_pos, bus), n) - _values(_B2View(self.model.slack_neg, bus), n)
+
+    def release_model(self) -> None:
+        """Drop the Pyomo model, which holds most of the memory of a large run (about 18 kB per time step: 3 GB for
+        20 hourly years), once the reporting has what it reads from it: the per-step costs and the slack per bus.
+        The solver's duals go too - they are keyed by the model's constraints and would keep it alive."""
+        if self.model is None:
+            return
+        self.step_costs()
+        self._slack = {b: self._slack_net(b) for b in self.meta.slack_buses}
+        self.model = None
+        self.meta.cost_exprs = {}
+        self.meta.blocks = {}
+        self.info.duals = {}
 
     def kpis(self) -> pd.DataFrame:
         """Key indicators as a tidy table (kpi, scope, value, unit)."""
@@ -194,6 +292,21 @@ class Results:
                 rows.append(("discharged", name, dis, "MWh"))
                 if comp.r.e_max > 0:
                     rows.append(("equivalent_cycles", name, dis / comp.r.e_max, "-"))
+                    # cycles as max_cycles counts them, on stored energy:
+                    # (eta_ch * charged + discharged / eta_dis) / 2 / e_max, total and busiest period
+                    steps = self.energy()
+                    port_mwh = {port: steps.xs((name, port), level=("component", "port"), axis=1).sum(axis=1)
+                                for port in ("charge", "discharge")}
+                    thr = (comp.r.eta_ch * port_mwh["charge"] + port_mwh["discharge"] / comp.r.eta_dis) / 2
+                    rows.append(("cycles_throughput", name, float(thr.sum()) / comp.r.e_max, "-"))
+                    period = comp.r.cycle_period or "D"
+                    per = thr.groupby(self.grid.groups(period)).sum() / comp.r.e_max
+                    rows.append((f"max_cycles_per_{ {'D': 'day', 'W': 'week', 'M': 'month', 'Y': 'year'}[period]}",
+                                 name, float(per.max()), "-"))
+                soc = self.states[(name, "soc")].to_numpy() * 100
+                for kpi, v in (("soc_min", soc.min()), ("soc_mean", soc.mean()), ("soc_max", soc.max()),
+                               ("soc_end", soc[-1])):
+                    rows.append((kpi, name, float(v), "%"))
             elif isinstance(comp, Converter):
                 cap = flows[(name, comp.r.cap_port)].iloc[:, 0]
                 pmax = np.max(comp.r.p_max)
@@ -201,6 +314,10 @@ class Results:
                 rows.append(("energy_on_capacity_port", name, e_cap, "MWh"))
                 if np.isfinite(pmax) and pmax > 0:
                     rows.append(("full_load_hours", name, e_cap / pmax, "h"))
+        # steps with opposite flows at once (import & export, charge & discharge)
+        for (name, _ports), ov in self.simultaneous().items():
+            rows += [("simultaneous_steps", name, int((ov > 0).sum()), "steps"),
+                     ("simultaneous_energy", name, float((ov * self.grid.dt).sum()), "MWh")]
         # electricity self-consumption / self-sufficiency
         el_buses = [b for b, bus in sys.buses.items() if bus.carrier.kind == "electricity"]
         prod = sum(energy[(c, "out")].sum() for c, comp in sys.components.items()
@@ -333,3 +450,14 @@ class _B2View:
 
 
 __all__ = ["Results", "CostCategory", "SLACK_PREFIX"]
+
+
+def _step_of(var, T) -> int | None:
+    """Time step of a model variable indexed by the time set (``x[t]`` or ``x[..., t]``), else None."""
+    iset = var.parent_component().index_set()
+    if iset is T:
+        return int(var.index())
+    subsets = list(iset.subsets()) if hasattr(iset, "subsets") else []
+    if len(subsets) > 1 and subsets[-1] is T:
+        return int(var.index()[-1])
+    return None

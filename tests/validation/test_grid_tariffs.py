@@ -144,3 +144,67 @@ def test_exclusive_limits_simultaneous_import_export():
     r2 = es2.solve(tie_break=0)
     s = flow(r2, "dso", "import") + flow(r2, "dso", "export")
     assert np.all(s <= 1.0 + 1e-9)
+
+
+def test_no_simultaneous_import_and_export_at_equal_prices():
+    """With import and export at the same price, importing and exporting the same MW is cost-neutral; the default
+    tie-break removes this degenerate optimum. A 2 MWh battery alone behind the grid only imports to charge and only
+    exports to discharge (arbitrage 10 -> 50 EUR/MWh)."""
+    es, el = el_system(grid_h(4))
+    price = [10, 10, 50, 50]
+    es.add(oems.GridConnection("dso", el, import_price=price, export_price=price, max_import=2, max_export=2),
+           oems.Storage("bess", el, e_max=2, p_ch_max=1, p_dis_max=1, eta_ch=1, eta_dis=1, soc_init=0, end="free"))
+    res = es.solve()
+    imp, exp = flow(res, "dso", "import"), flow(res, "dso", "export")
+    assert np.allclose(np.minimum(imp, exp), 0, atol=1e-9)
+    assert res.total_cost == pytest.approx(10 * 2 - 50 * 2)
+
+
+def test_grid_has_no_power_limits_by_default():
+    """max_import and max_export default to no limit: a 3 MW PV surplus is exported in full (at 20 EUR/MWh)."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, import_price=50, export_price=20),
+           oems.Producer("pv", el, profile=[3, 0], curtailable=True), oems.Demand("load", el, profile=1))
+    res = es.solve()
+    assert flow(res, "dso", "export")[0] == pytest.approx(2.0) and flow(res, "dso", "import")[1] == pytest.approx(1.0)
+    assert res.total_cost == pytest.approx(-2 * 20 + 1 * 50)
+
+
+def test_unlimited_grid_with_export_above_import_cost_is_rejected():
+    """Unlimited import and export with an export price above the import cost would let the model buy and sell
+    without bound: validation stops it with a clear message (limits make it a normal, bounded case)."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, import_price=10, export_price=[5, 30]), oems.Demand("load", el, profile=1))
+    with pytest.raises(oems.ValidationError, match="earn without bound"):
+        es.validate()
+    es2, el2 = el_system(grid_h(2))
+    es2.add(oems.GridConnection("dso", el2, import_price=10, export_price=[5, 30], max_export=1),
+            oems.Demand("load", el2, profile=1))
+    assert es2.validate(raise_on_error=False).ok
+
+
+def test_storage_with_nothing_to_discharge_into_is_warned():
+    """A battery alone behind a grid without an export price can only charge: validation says why it stays idle;
+    an export price (or a demand on the bus) removes the warning."""
+    def warnings(**grid_kw):
+        es, el = el_system(grid_h(2))
+        es.add(oems.GridConnection("dso", el, import_price=10, **grid_kw),
+               oems.Storage("bess", el, e_max=1, p_ch_max=1, p_dis_max=1))
+        return es.validate(raise_on_error=False).warnings
+    assert any("nothing to discharge into" in w for w in warnings())
+    assert not any("nothing to discharge into" in w for w in warnings(export_price=8))
+
+
+@pytest.mark.parametrize("curtailable, cost", [(True, 10.0), (False, 15.0)])
+def test_curtailment_can_be_switched_off(curtailable, cost):
+    """PV [2, 0] MW, 1 MW load, import 10 EUR/MWh, export pays nothing but costs a 5 EUR/MWh fee. Allowed to
+    curtail, the 1 MWh PV surplus is curtailed: cost = 10 (second hour). Not allowed, the surplus must be
+    exported: cost = 10 + 5 = 15 EUR, and the producer has no curtailment state."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, import_price=10, export_price=0, export_fee=5, max_export=2),
+           oems.Producer("pv", el, profile=[2, 0], curtailable=curtailable), oems.Demand("load", el, profile=1))
+    res = es.solve(tie_break=0)
+    assert_invariants(res)
+    assert res.total_cost == pytest.approx(cost)
+    assert flow(res, "pv", "out")[0] == pytest.approx(1.0 if curtailable else 2.0)
+    assert (("pv", "curtailment") in res.states.columns) is curtailable

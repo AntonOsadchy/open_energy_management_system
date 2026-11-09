@@ -87,13 +87,15 @@ const TUT_STEPS = [
   },
   {
     title: "Set the time horizon",
-    html: `<p>Every run covers a time horizon at a fixed resolution. In the top bar set <b>Start</b> to
-      <code>2025-06-02</code>, <b>Days</b> to <code>2</code> and <b>Resolution</b> to <code>1h</code>.</p>
+    html: `<p>Every run covers a time horizon at a fixed resolution, set in the <b>⚙️ Run settings</b> block. Drag it
+      from <b>Settings</b> onto the canvas and in its properties set <b>Start</b> to <code>2025-06-02</code>,
+      <b>Days</b> to <code>2</code> and <b>Resolution</b> to <code>1h</code>.</p>
       <p class="hint">48 hourly steps. The same model also runs at 15-min resolution without changing any
       parameter.</p>`,
-    target: () => ["#topbar .settings"],
+    target: () => [Tut.palette(".pal-item.invest"), "#panel"],
     checks: [["Start 2025-06-02, 2 days, 1h", () => Tut.settingsOk()]],
     auto() {
+      if (!Blocks.investNode()) Blocks.addInvest(40, 40);
       App.applySettings({ start: "2025-06-02", days: 2, freq: "1h", tz: "Europe/Copenhagen" });
       App.dirty();
     },
@@ -122,22 +124,23 @@ const TUT_STEPS = [
   {
     title: "Connect the grid",
     html: `<p>Drag <b>Grid connection</b> onto the canvas. Then drag a wire from its <code>⇄ import / export</code>
-      connector (right side) to the bus's <code>supply</code> connector (left side).</p>
-      <p>Grids and storages have a single <b>⇄</b> connector: the one wire carries energy both ways, and after a
-      run it shows both directions.</p>`,
+      port (right side) to the bus's port (left side).</p>
+      <p>Energy ports have no direction on the canvas: you just connect a port to a bus, and the model knows which
+      way energy flows through it. Grids and storages have a single <b>⇄</b> port: the one wire carries energy both
+      ways, and after a run it shows both directions.</p>`,
     target: () => {
       const g = Tut.find("GridConnection", undefined, "electricity");
-      return g ? [Tut.conn(g, "out", "link"), Tut.conn(Tut.bus("electricity"), "in", "supply")] :
+      return g ? [Tut.conn(g, "out", "link"), Tut.conn(Tut.bus("electricity"), "in", "port")] :
         [Tut.palette('.pal-item[data-type="GridConnection"]')];
     },
     checks: [
       ["Grid connection block", () => Tut.blocks("GridConnection").length > 0],
-      ["grid ⇄ → el supply", () => Tut.edge(Tut.find("GridConnection", undefined, "electricity"), "link", Tut.bus("electricity"), "supply")],
+      ["grid ⇄ → el bus", () => Tut.edge(Tut.find("GridConnection", undefined, "electricity"), "link", Tut.bus("electricity"), "port")],
     ],
     auto() {
       const el = Tut.ensure(Tut.bus("electricity"), () => Blocks.addBus(460, 170));
       const g = Tut.ensure(Tut.find("GridConnection", undefined, "electricity"), () => Blocks.addComponent(220, 20, "GridConnection"));
-      Tut.wire(g, "link", el, "supply");
+      Tut.wire(g, "link", el, "port");
     },
   },
   {
@@ -173,21 +176,21 @@ const TUT_STEPS = [
   },
   {
     title: "Add a demand",
-    html: `<p>Drag <b>Demand</b> onto the canvas and wire the bus's <code>withdraw</code> to the demand's
-      <code>in</code>. In the panel set <b>profile</b> to <code>0.5</code> MW: a constant load.</p>`,
+    html: `<p>Drag <b>Demand</b> onto the canvas and wire the demand's <code>in</code> port to the
+      bus. In the panel set <b>profile</b> to <code>0.5</code> MW: a constant load.</p>`,
     target: () => {
       const dm = Tut.find("Demand", undefined, "electricity");
-      return dm ? [Tut.conn(Tut.bus("electricity"), "out", "withdraw"), Tut.conn(dm, "in", "in"), "#panel"] :
+      return dm ? [Tut.conn(Tut.bus("electricity"), "in", "port"), Tut.conn(dm, "out", "in"), "#panel"] :
         [Tut.palette('.pal-item[data-type="Demand"]')];
     },
     checks: [
-      ["Demand wired to the el bus", () => Tut.edge(Tut.bus("electricity"), "withdraw", Tut.find("Demand", undefined, "electricity"), "in")],
+      ["Demand wired to the el bus", () => Tut.edge(Tut.find("Demand", undefined, "electricity"), "in", Tut.bus("electricity"), "port")],
       ["profile 0.5 MW", () => Tut.param(Tut.find("Demand", undefined, "electricity"), "profile", 0.5)],
     ],
     auto() {
       const el = Tut.bus("electricity");
       const dm = Tut.ensure(Tut.find("Demand", undefined, "electricity"), () => Blocks.addComponent(670, 20, "Demand"));
-      Tut.wire(el, "withdraw", dm, "in");
+      Tut.wire(dm, "in", el, "port");
       Tut.setParams(dm, { profile: 0.5 });
     },
   },
@@ -204,44 +207,44 @@ const TUT_STEPS = [
   },
   {
     title: "Add rooftop PV",
-    html: `<p>From <b>Presets</b> drag <b>PV</b> onto the canvas. Wire its <code>out</code> to the el bus
-      <code>supply</code>. Then drag the input <code>pv_cf</code> onto the canvas and wire it to the PV's
+    html: `<p>From <b>Presets</b> drag <b>PV</b> onto the canvas. Wire its <code>out</code> port to the el
+      bus. Then drag the input <code>pv_cf</code> onto the canvas and wire it to the PV's
       <code>cf</code> connector.</p>
       <p class="hint">Output = capacity (1 MW in the panel) × cf. PV is curtailable: surplus the site cannot use
       is exported (up to 1 MW) or curtailed.</p>`,
     target: () => {
       const pv = Tut.find("Producer", "pv", "electricity");
-      return pv ? [Tut.conn(pv, "out", "out"), Tut.conn(Tut.bus("electricity"), "in", "supply"), Tut.inputTarget("pv_cf"), Tut.conn(pv, "in", "cf")] :
+      return pv ? [Tut.conn(pv, "out", "out"), Tut.conn(Tut.bus("electricity"), "in", "port"), Tut.inputTarget("pv_cf"), Tut.conn(pv, "in", "cf")] :
         [Tut.palette('.pal-item[data-preset="pv"]')];
     },
     checks: [
-      ["PV out → el supply", () => Tut.edge(Tut.find("Producer", "pv", "electricity"), "out", Tut.bus("electricity"), "supply")],
+      ["PV out → el bus", () => Tut.edge(Tut.find("Producer", "pv", "electricity"), "out", Tut.bus("electricity"), "port")],
       ["pv_cf → cf", () => Tut.dataWire(Tut.find("Producer", "pv", "electricity"), "cf", "pv_cf")],
     ],
     async auto() {
       const pv = Tut.ensure(Tut.find("Producer", "pv", "electricity"), () => Tut.addPreset("pv", 220, 250));
       const d = await Tut.inputBlock("pv_cf", 10, 280);
-      Tut.wire(pv, "out", Tut.bus("electricity"), "supply");
+      Tut.wire(pv, "out", Tut.bus("electricity"), "port");
       Tut.wire(d, "pv_cf", pv, "cf");
     },
   },
   {
     title: "Add a battery",
-    html: `<p>From <b>Presets</b> drag <b>Battery</b> and wire the el bus <code>withdraw</code> to the battery's
-      <code>⇄ charge / discharge</code> connector (left side).</p>
+    html: `<p>From <b>Presets</b> drag <b>Battery</b> and wire its <code>⇄ charge / discharge</code> port to the
+      el bus.</p>
       <p class="hint">The preset is 2 MWh / 1 MW with 95 % charge and discharge efficiency. Click it to see or
       change the parameters.</p>`,
     target: () => {
       const b = Tut.find("Storage", "battery", "electricity");
-      return b ? [Tut.conn(Tut.bus("electricity"), "out", "withdraw"), Tut.conn(b, "in", "link")] :
+      return b ? [Tut.conn(Tut.bus("electricity"), "in", "port"), Tut.conn(b, "out", "link")] :
         [Tut.palette('.pal-item[data-preset="battery"]')];
     },
     checks: [
-      ["el withdraw → battery ⇄", () => Tut.edge(Tut.bus("electricity"), "withdraw", Tut.find("Storage", "battery", "electricity"), "link")],
+      ["battery ⇄ → el bus", () => Tut.edge(Tut.find("Storage", "battery", "electricity"), "link", Tut.bus("electricity"), "port")],
     ],
     auto() {
       const b = Tut.ensure(Tut.find("Storage", "battery", "electricity"), () => Tut.addPreset("battery", 670, 170));
-      Tut.wire(Tut.bus("electricity"), "withdraw", b, "link");
+      Tut.wire(b, "link", Tut.bus("electricity"), "port");
     },
   },
   {
@@ -269,41 +272,40 @@ const TUT_STEPS = [
   },
   {
     title: "Add a heat pump",
-    html: `<p>From <b>Presets</b> drag <b>Heat pump</b>. Wire el <code>withdraw</code> → heat pump <code>in1</code>
-      (electricity) and heat pump <code>out1</code> → heat bus <code>supply</code>.</p>
+    html: `<p>From <b>Presets</b> drag <b>Heat pump</b>. Wire its <code>in1</code> port (electricity) to the el
+      bus and its <code>out1</code> port (heat) to the heat bus.</p>
       <p>In the panel set <b>p_max</b> to <code>1.5</code> MW. The capacity applies to out1, the heat output.</p>
       <p class="hint">A heat pump is a <b>Converter</b>: out1 = 3 × in1 (COP 3). Wire a data column to
       <code>coef out1</code> for a time-varying COP.</p>`,
     target: () => {
       const hp = Tut.find("Converter", "heat_pump", "heat");
-      return hp ? [Tut.conn(Tut.bus("electricity"), "out", "withdraw"), Tut.conn(hp, "in", "in1"), Tut.conn(hp, "out", "out1"),
-        Tut.conn(Tut.bus("heat"), "in", "supply"), "#panel"] : [Tut.palette('.pal-item[data-preset="heat_pump"]')];
+      return hp ? [Tut.conn(Tut.bus("electricity"), "in", "port"), Tut.conn(hp, "out", "in1"), Tut.conn(hp, "out", "out1"),
+        Tut.conn(Tut.bus("heat"), "in", "port"), "#panel"] : [Tut.palette('.pal-item[data-preset="heat_pump"]')];
     },
     checks: [
-      ["el withdraw → heat pump in1", () => Tut.edge(Tut.bus("electricity"), "withdraw", Tut.find("Converter", "heat_pump", "heat"), "in1")],
-      ["heat pump out1 → heat supply", () => Tut.edge(Tut.find("Converter", "heat_pump", "heat"), "out1", Tut.bus("heat"), "supply")],
+      ["heat pump in1 → el bus", () => Tut.edge(Tut.find("Converter", "heat_pump", "heat"), "in1", Tut.bus("electricity"), "port")],
+      ["heat pump out1 → heat bus", () => Tut.edge(Tut.find("Converter", "heat_pump", "heat"), "out1", Tut.bus("heat"), "port")],
       ["p_max 1.5 MW", () => Tut.param(Tut.find("Converter", "heat_pump", "heat"), "p_max", 1.5)],
     ],
     auto() {
       const hp = Tut.ensure(Tut.find("Converter", "heat_pump", "heat"), () => Tut.addPreset("heat_pump", 220, 440));
-      Tut.wire(Tut.bus("electricity"), "withdraw", hp, "in1");
-      Tut.wire(hp, "out1", Tut.bus("heat"), "supply");
+      Tut.wire(hp, "in1", Tut.bus("electricity"), "port");
+      Tut.wire(hp, "out1", Tut.bus("heat"), "port");
       Tut.setParams(hp, { p_max: 1.5 });
     },
   },
   {
     title: "Add heat storage",
-    html: `<p>From <b>Presets</b> drag <b>Heat storage</b> and wire the heat bus <code>withdraw</code> to its
-      <code>⇄</code> connector. In the panel set <b>e_max</b> <code>4</code> MWh, <b>p_ch_max</b> and <b>p_dis_max</b>
+    html: `<p>From <b>Presets</b> drag <b>Heat storage</b> and wire its <code>⇄</code> port to the heat bus. In the panel set <b>e_max</b> <code>4</code> MWh, <b>p_ch_max</b> and <b>p_dis_max</b>
       <code>1</code> MW and <b>self_discharge</b> <code>0.005</code> per hour.</p>
       <p class="hint">The tank lets the heat pump run when electricity is cheap or PV is available.</p>`,
     target: () => {
       const t = Tut.find("Storage", "tes", "heat");
-      return t ? [Tut.conn(Tut.bus("heat"), "out", "withdraw"), Tut.conn(t, "in", "link"), "#panel"] :
+      return t ? [Tut.conn(Tut.bus("heat"), "in", "port"), Tut.conn(t, "out", "link"), "#panel"] :
         [Tut.palette('.pal-item[data-preset="tes"]')];
     },
     checks: [
-      ["heat withdraw → storage ⇄", () => Tut.edge(Tut.bus("heat"), "withdraw", Tut.find("Storage", "tes", "heat"), "link")],
+      ["heat storage ⇄ → heat bus", () => Tut.edge(Tut.find("Storage", "tes", "heat"), "link", Tut.bus("heat"), "port")],
       ["e_max 4 MWh, 1 MW charge/discharge", () => {
         const t = Tut.find("Storage", "tes", "heat");
         return Tut.param(t, "e_max", 4) && Tut.param(t, "p_ch_max", 1) && Tut.param(t, "p_dis_max", 1);
@@ -312,28 +314,28 @@ const TUT_STEPS = [
     ],
     auto() {
       const t = Tut.ensure(Tut.find("Storage", "tes", "heat"), () => Tut.addPreset("tes", 670, 400));
-      Tut.wire(Tut.bus("heat"), "withdraw", t, "link");
+      Tut.wire(t, "link", Tut.bus("heat"), "port");
       Tut.setParams(t, { e_max: 4, p_ch_max: 1, p_dis_max: 1, self_discharge: 0.005 });
     },
   },
   {
     title: "Add the heat demand",
-    html: `<p>Drag another <b>Demand</b> and wire heat <code>withdraw</code> → its <code>in</code>. Then drag the
+    html: `<p>Drag another <b>Demand</b> and wire its <code>in</code> port to the heat bus. Then drag the
       input <code>heat_load</code> onto the canvas and wire it to the demand's <code>profile</code>: 0.8 MW from 6
       to 18 h, 0.3 MW otherwise.</p>`,
     target: () => {
       const dm = Tut.find("Demand", undefined, "heat");
-      return dm ? [Tut.conn(Tut.bus("heat"), "out", "withdraw"), Tut.conn(dm, "in", "in"), Tut.inputTarget("heat_load"), Tut.conn(dm, "in", "profile")] :
+      return dm ? [Tut.conn(Tut.bus("heat"), "in", "port"), Tut.conn(dm, "out", "in"), Tut.inputTarget("heat_load"), Tut.conn(dm, "in", "profile")] :
         [Tut.palette('.pal-item[data-type="Demand"]')];
     },
     checks: [
-      ["heat withdraw → demand in", () => Tut.edge(Tut.bus("heat"), "withdraw", Tut.find("Demand", undefined, "heat"), "in")],
+      ["heat demand in → heat bus", () => Tut.edge(Tut.find("Demand", undefined, "heat"), "in", Tut.bus("heat"), "port")],
       ["heat_load → profile", () => Tut.dataWire(Tut.find("Demand", undefined, "heat"), "profile", "heat_load")],
     ],
     async auto() {
       const dm = Tut.ensure(Tut.find("Demand", undefined, "heat"), () => Blocks.addComponent(670, 560, "Demand"));
       const d = await Tut.inputBlock("heat_load", 460, 640);
-      Tut.wire(Tut.bus("heat"), "withdraw", dm, "in");
+      Tut.wire(dm, "in", Tut.bus("heat"), "port");
       Tut.wire(d, "heat_load", dm, "profile");
     },
   },
@@ -350,15 +352,12 @@ const TUT_STEPS = [
     title: "Explore the results",
     html: `<ul><li><b>Summary</b>: cost per category and KPIs (self-consumption, cycles, full-load hours,
       average marginal price per bus).</li>
-      <li><b>Costs</b>: cost per block. REVENUE is negative: exported PV.</li>
-      <li><b>Bus balance</b>: pick a bus to see every flow in and out per hour and its <b>marginal price</b>.
-      On the heat bus it is about the electricity price ÷ COP.</li>
-      <li><b>Component</b>: flows and storage level of one block.</li>
-      <li><b>Download CSV</b> for all tables, <b>Save</b> to keep the project, <b>Export config</b> to run it
-      from the command line.</li></ul>
-      <p>Next, try a CO₂ price in the top bar, a peak charge on the grid, or Resolution 15min.</p>`,
+      <li><b>🔍 Inspect</b> opens every time series (flows, storage levels and each bus's <b>marginal price</b> -
+      on the heat bus about the electricity price ÷ COP) in a window, with CSV / Excel downloads and a <b>📄 Report</b>;
+      <b>⌘S</b> (Ctrl+S) keeps the project; <b>Export config</b> in the Run window runs it from the command line.</li></ul>
+      <p>Next, try a CO₂ price or a peak charge on the grid, or Resolution 15min.</p>`,
     keepResults: true,
-    target: () => ["#res-tabs", "#res-download"],
+    target: () => ["#res-tabs", "#res-inspect"],
     checks: [],
   },
 ];
@@ -373,7 +372,9 @@ const Tutorial = {
     if (this.i === 0 && allNodes().length && confirm("The tutorial starts from an empty canvas. Clear the canvas?")) {
       Blocks.editor.clear(); Panel.clear(); Results.summary = null;
     }
+    Layout.open("side"); Layout.open("palette");
     this.el.classList.remove("hidden");
+    App.renderDatasets();
     this.render();
     clearInterval(this.timer);
     this.timer = setInterval(() => this.refresh(), 500);
@@ -383,7 +384,10 @@ const Tutorial = {
     this.el.classList.add("hidden");
     clearInterval(this.timer);
     this.highlight([]);
+    App.renderDatasets();
   },
+
+  isOpen() { return !!this.el && !this.el.classList.contains("hidden"); },
 
   build() {
     const el = document.getElementById("tutorial");
@@ -449,5 +453,11 @@ const Tutorial = {
   highlight(selectors) {
     document.querySelectorAll(".tut-hl").forEach(x => x.classList.remove("tut-hl"));
     for (const sel of selectors) document.querySelectorAll(sel).forEach(x => x.classList.add("tut-hl"));
+    // a new target in the palette: show its tab (once, so the user can still switch tabs while it pulses)
+    const key = selectors.join("|");
+    if (key === this.shown) return;
+    this.shown = key;
+    const panel = document.querySelector("#palette .pal-panel .tut-hl")?.closest(".pal-panel")?.dataset.panel;
+    if (panel && panel !== Palette.tab) Palette.show(panel);
   },
 };

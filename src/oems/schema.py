@@ -22,6 +22,7 @@ class Kind(StrEnum):
     PERIOD = "period"      # calendar period "D"/"W"/"M"/"Q"/"Y" or None
     TARIFFS = "tariffs"    # list of Tariff objects
     PORT_MAP = "port_map"  # {port name: value}
+    CURVES = "curves"      # SoH curves {"curves": {cycles_per_day: [SoH, ...]}} (used by multi-year runs)
 
 
 @dataclass(frozen=True)
@@ -92,4 +93,5 @@ def spec_to_dict(name: str, spec: Spec, default) -> dict:
     }
     if default is not MISSING and isinstance(default, (int, float, str, bool, type(None))):
         d["default"] = None if isinstance(default, float) and default == float("inf") else default
+        d["unlimited"] = isinstance(default, float) and default == float("inf")     # empty field = no limit
     return d

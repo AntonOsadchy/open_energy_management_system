@@ -15,13 +15,46 @@ Browser tests need `pip install playwright && python -m playwright install chrom
 6. the emission accounting variables `m.E` equal `sum(factor * flow * dt * weight)`.
 
 
-**128 test functions.**
+**260 test functions.**
 
 
 ## Unit tests
 
 Fast, isolated checks of single building blocks: time grid and data alignment, input validation and topology checks, and the solver adapter.
 
+
+### `unit/test_degradation.py`
+
+Unit: SoH curves and their interpolation by age and cumulative cycles (oems.degradation).
+
+| Test | What it checks |
+|---|---|
+| `test_exact_at_curve_points` | At 1 cycle/day for 5 years (1825 cycles) SoH is the 1/day curve's year-5 value 0.865; at 1.5/day 0.839. |
+| `test_interpolates_between_rates_at_the_average_rate` | 1.25 cycles/day on average after 5 years lies halfway: (0.865 + 0.839) / 2 = 0.852. |
+| `test_days_per_year_sets_the_average_rate` | With a 366-day base year, 1.25 * 366 * 5 cycles is still 1.25 cycles/day. |
+| `test_rates_outside_the_curves_use_the_nearest_curve_with_a_note` *(parametrized: 'rate, expected')* | Rates outside the curves use the nearest curve with a note. |
+| `test_single_curve_ignores_cycling` | Single curve ignores cycling. |
+| `test_ended_curve_continues_along_its_last_slope` | The 1.5/day curve ends at year 18 (0.645, slope -0.011/yr): at year 19 it reads 0.634, below end of life, so interpolating near it retires the battery; at 1.25/day in year 19: (0.698 + 0.634) / 2 = 0.666. |
+| `test_fractional_age_interpolates_linearly` | Fractional age interpolates linearly. |
+| `test_bad_curves_are_rejected` *(parametrized: 'curves, msg')* | Bad curves are rejected. |
+| `test_different_end_values_warn_and_use_the_highest_as_end_of_life` | Different end values warn and use the highest as end of life. |
+| `test_config_form_with_string_rates` | Config form with string rates. |
+
+### `unit/test_horizon.py`
+
+Unit tests of the one-shot lifetime horizon (oems.sizing): discounting, cost weights and tiling of the inputs.
+
+| Test | What it checks |
+|---|---|
+| `test_horizon_discounts_years_and_scales_a_short_base_period_to_a_year` | Horizon discounts years and scales a short base period to a year. |
+| `test_a_calendar_year_base_is_not_scaled` | A calendar year base is not scaled. |
+| `test_horizon_rejects_bad_inputs` | Horizon rejects bad inputs. |
+| `test_stacked_grid_repeats_the_base_period_back_to_back` | Stacked grid repeats the base period back to back. |
+| `test_series_are_tiled_from_the_base_window_and_line_up_with_the_stacked_grid` | Series are tiled from the base window and line up with the stacked grid. |
+| `test_series_at_another_resolution_are_tiled_too` | Series at another resolution are tiled too. |
+| `test_a_series_without_data_in_the_base_period_is_an_error` | A series without data in the base period is an error. |
+| `test_inline_lists_of_one_base_period_are_tiled` | Inline lists of one base period are tiled. |
+| `test_irr_and_payback` | Irr and payback. |
 
 ### `unit/test_solver.py`
 
@@ -61,6 +94,10 @@ Unit tests for the time grid and time-series alignment (oems.timeseries).
 | `test_alignment_is_reported` | Every resample is logged with source/target resolution and method. |
 | `test_energy_to_power` | 0.5 MWh per 15 min is 2 MW. |
 | `test_load_csv_and_infer_resolution` | CSV with an ISO time column is parsed into a tz-aware DatetimeIndex. |
+| `test_daily_profile_repeats_on_every_day_by_local_time` | A 24-value profile gives step h of every day the value of hour h of the local clock; on the spring DST day (23 h) the 02:00 value is skipped and the next midnight is still value 0. |
+| `test_daily_profile_holds_on_finer_and_averages_on_coarser_grids` | An hourly profile holds for the four quarter hours of each hour; a 96-value (15-min) profile is averaged over the four quarter hours of each hourly step. |
+| `test_bad_daily_profiles_are_rejected` *(parametrized: 'values, msg')* | A profile needs a whole number of equal steps per day (24, 48, 96 …) of finite numbers. |
+| `test_daily_profile_in_a_config_round_trips` | `{"daily": [...]}` in a config sets a series parameter (the demand follows the profile on both days) and `to_config` writes it back in the same form. |
 
 ### `unit/test_validation.py`
 
@@ -113,6 +150,7 @@ Validation: emissions, CO2 pricing/caps and shadow (marginal) prices.
 | Test | What it checks |
 |---|---|
 | `test_co2_breakeven_price` *(parametrized: 'delta, winner')* | Heat cost per MWh: HP = c_el/COP + pi*eps_el/COP, boiler = c_gas/eta + pi*eps_gas/eta. They are equal at pi* = (c_el/COP - c_gas/eta) / (eps_gas/eta - eps_el/COP) = 54.5 EUR/t. Below pi* the boiler is used, above pi* the heat pump. |
+| `test_grid_co2_price_matches_system_policy` *(parametrized: 'delta, winner')* | A co2_price on each grid connection prices emissions like the system policy: same break-even pi*, same objective; a grid price replaces (does not add to) the policy price. |
 | `test_emissions_are_counted_at_the_boundary` | Without a policy the boiler is cheaper; 2 MWh heat / 0.9 = 2.222 MWh gas * 0.2 t/MWh = 0.444 t. |
 | `test_report_only_does_not_change_objective` | An emission policy with report_only=True leaves the optimum unchanged (emissions are only reported). |
 | `test_emission_cap_dual_matches_finite_difference` | The dual of the CO2 cap equals the marginal abatement cost: (obj(cap) - obj(cap + d)) / d. |
@@ -120,6 +158,7 @@ Validation: emissions, CO2 pricing/caps and shadow (marginal) prices.
 | `test_shadow_price_of_heat_from_eboiler` | Heat from an e-boiler with eta 0.9 at 90 EUR/MWh el costs 100 EUR/MWh heat (+ tiny tie-break). |
 | `test_shadow_prices_scale_with_resolution` | Shadow prices are per MWh, so they are the same on 15-min and hourly grids. |
 | `test_flow_cost_refund_category` | A negative flow cost (tax refund) on the HP input appears as negative TAX. |
+| `test_a_cap_on_a_gas_nothing_emits_is_met_and_ignored` | A CO2 cap on a site without any CO2 factor (0 t <= cap) solves as without the cap, with no cap dual. |
 
 ### `validation/test_flexibility.py`
 
@@ -155,6 +194,34 @@ Validation: grid connection and tariffs against hand-calculated costs.
 | `test_soft_capacity_limit_overrun_penalty` | Demand 2 MW for 1 h, limit 1.5 MW with overrun penalty 100 EUR/MWh: overrun 0.5 MWh -> 50 EUR. |
 | `test_fixed_charge_counts_periods` | 12 EUR per day over 48 h = 24 EUR in FIXED; dispatch unaffected. |
 | `test_exclusive_limits_simultaneous_import_export` | Export credit 100 > import price 50 creates an arbitrage loop (import and export together). Without `exclusive` both flows hit their 1 MW limits. With `exclusive` the relaxation F_imp/1 + F_exp/1 <= 1 holds - it halves but (being an LP relaxation) does not remove the loop. |
+| `test_no_simultaneous_import_and_export_at_equal_prices` | With import and export at the same price, importing and exporting the same MW is cost-neutral; the default tie-break removes this degenerate optimum. A 2 MWh battery alone behind the grid only imports to charge and only exports to discharge (arbitrage 10 -> 50 EUR/MWh). |
+| `test_grid_has_no_power_limits_by_default` | max_import and max_export default to no limit: a 3 MW PV surplus is exported in full (at 20 EUR/MWh). |
+| `test_unlimited_grid_with_export_above_import_cost_is_rejected` | Unlimited import and export with an export price above the import cost would let the model buy and sell without bound: validation stops it with a clear message (limits make it a normal, bounded case). |
+| `test_storage_with_nothing_to_discharge_into_is_warned` | A battery alone behind a grid without an export price can only charge: validation says why it stays idle; an export price (or a demand on the bus) removes the warning. |
+| `test_curtailment_can_be_switched_off` *(parametrized: 'curtailable, cost')* | PV [2, 0] MW, 1 MW load, import 10 EUR/MWh, export pays nothing but costs a 5 EUR/MWh fee. Allowed to curtail, the 1 MWh PV surplus is curtailed: cost = 10 (second hour). Not allowed, the surplus must be exported: cost = 10 + 5 = 15 EUR, and the producer has no curtailment state. |
+
+### `validation/test_lifetime.py`
+
+Validation: multi-year runs with battery degradation (oems.degradation.simulate_lifetime).
+
+| Test | What it checks |
+|---|---|
+| `test_capacity_follows_a_single_curve_and_the_battery_retires_below_end_of_life` | Single curve SoH 0.9 / 0.8 / 0.7 (end of life 0.7). Year k runs with e_max = SoH after year k-1: 1, 0.9, 0.8, 0.7 -> cost 220 - 180 e_max = 40, 58, 76, 94 EUR. After year 4 the extended curve reads 0.6 < 0.7, so the battery retires: years 5 and 6 have no capacity and no flows (cost 220 EUR each). |
+| `test_soh_interpolates_at_the_average_cycling_rate` | Curves at 6 and 18 cycles/day; the battery makes 12 cycles/day in year 1, halfway: SoH = (0.95 + 0.85) / 2. |
+| `test_retired_battery_cannot_burn_energy_at_negative_prices` | A negative price (-50 EUR/MWh) and a lossy battery (eta 0.9): a zero-capacity storage that kept its power could charge and discharge at once to burn energy; once retired (zero capacity *and* power) every flow is zero. Curve SoH 0.5 after year 1 = end of life (still operating); the extended curve reads 0 after year 2, so it retires then and year 3 is dead. |
+| `test_without_degradation_every_year_is_the_same_and_solved_once` | Without degradation every year is the same and solved once. |
+| `test_discounting_gives_the_npv` | Profit -40 EUR a year for 3 years at 10 %: NPV = -40 (1/1.1 + 1/1.1^2 + 1/1.1^3) = -99.47 EUR. |
+| `test_inflation_scales_every_years_profit` | 10 % inflation: the profit of -40 EUR in year 1 is -44 in year 2 and -48.4 in year 3 (nominal). |
+| `test_one_year_with_curves_equals_an_ordinary_run` | One year with curves equals an ordinary run. |
+
+### `validation/test_profit.py`
+
+Validation: system profit per time step, split from the optimiser's own cost expressions.
+
+| Test | What it checks |
+|---|---|
+| `test_step_costs_add_up_to_component_costs` | For every component and category, the per-step parts plus the period charges equal the optimiser's cost. |
+| `test_profit_per_step_matches_flows_and_prices` | Each step's profit = export income - import cost - battery cycle cost at that step, and summed with the period charges it equals -total_cost. |
 
 ### `validation/test_resolution_and_diagnostics.py`
 
@@ -173,6 +240,43 @@ Validation: 15-min vs hourly equivalence, weights, explicit flows and diagnostic
 | `test_bus_slack_keeps_model_feasible` | With allow_slack the same shortfall is priced at slack_cost and visible in res.slack. |
 | `test_results_export` | to_csv writes all result tables and metadata; the heat-electrification KPI is 1 for an all-electric heat supply. |
 
+### `validation/test_sizing.py`
+
+Validation: one-shot lifetime capacity optimisation (oems.sizing.optimise_lifetime) against hand-computed cases.
+
+| Test | What it checks |
+|---|---|
+| `test_battery_is_built_when_lifetime_savings_beat_the_capex` | 2 years undiscounted: savings 2 * 394,200 = 788,400 EUR per MWh (up to 1 MWh). CAPEX 700,000 -> 1 MWh, NPV 88,400. |
+| `test_battery_is_not_built_when_capex_exceeds_lifetime_savings` | Battery is not built when capex exceeds lifetime savings. |
+| `test_discounting_and_opex_move_the_break_even` | 5 % over 2 years: annuity 1/1.05 + 1/1.05^2 = 1.8594. Savings - OPEX per MWh and year = 394,200 - 50,000; break-even CAPEX = 344,200 * 1.8594 = 640,016 EUR/MWh. |
+| `test_inflation_raises_savings_and_opex_every_year_but_not_the_capex` | 10 % inflation, undiscounted: savings 394,200 in year 1 and 433,620 in year 2, OPEX 50,000 then 55,000. |
+| `test_inflation_moves_the_break_even_in_the_optimisation` | 5 % discount, 3 % inflation over 2 years: present value of a base-year EUR per year 1/1.05 + 1.03/1.05^2; a CAPEX just under 344,200 * that is built, just over it not (without inflation it would not be built). |
+| `test_inflation_input_error` | Inflation input error. |
+| `test_power_capex_and_fixed_duration` | Power costs 100,000 EUR/MW and E = 2 h x P: 1 MWh needs 0.5 MW; the battery then charges 0.5 MW for an hour and can only fill half of it, so a 1 MWh / 0.5 MW battery saves 2 * 90 * 0.5 per base period. |
+| `test_pv_is_sized_to_cover_the_expensive_hours_and_stops_at_its_maximum` | PV cf 0.5 in the two 100-EUR hours: 2 MW covers the 1 MW demand there (saving 2 * 100 per MW of demand and base period); a limit of 1 MW binds and is reported. |
+| `test_reference_case_keeps_a_minimum_size_and_counts_only_the_increment` | A minimum of 0.5 MWh / 0.5 MW (what exists already) is in both cases: the investment is the extra 0.5 MWh. |
+| `test_capex_and_opex_are_required_when_the_size_is_optimised` | Capex and opex are required when the size is optimised. |
+| `test_an_optimised_size_needs_a_lifetime_run` | An optimised size needs a lifetime run. |
+| `test_a_fixed_size_storage_still_requires_its_size` | A fixed size storage still requires its size. |
+| `test_peak_charges_are_discounted_per_year` | A 1-day base period stands for 365 days. A daily peak charge of 10 EUR/MW on a flat 1 MW import: every modelled day stands for 365 billed days of its year, so the present value is 10 * 365 * (1/1.1 + 1/1.1^2). |
+| `test_the_blocks_own_size_fields_are_ignored_when_the_size_is_optimised` | A battery block keeps e_max / p_ch_max / p_dis_max of 0.25 from before it was optimised: they must not cap the optimised size (only e_size_* / p_size_* do), so it still reaches 1 MWh / 1 MW as without them. |
+| `test_hurdle_weights` | Hurdle weights. |
+| `test_hurdle_value_is_the_weighted_cash_flow_of_the_investment` | reference - sized, weighted by W, is -CAPEX + sum(W * net cash flow) of the year table, e.g. the NPV at 10 % for the IRR weights: for the 1 MWh battery -700,000 + 394,200 * (1/1.1 + 1/1.1^2). |
+| `test_a_minimum_irr_above_the_optimum_shrinks_the_investment_to_meet_it` | A minimum irr above the optimum shrinks the investment to meet it. |
+| `test_hurdles_are_met_on_the_nominal_cash_flows_with_inflation` *(parametrized: 'hurdles,key,target')* | With 4 % inflation the cash flows grow every year; the hurdle constraint weighs them as the year table does. |
+| `test_a_hurdle_already_met_changes_nothing` | A hurdle already met changes nothing. |
+| `test_a_maximum_payback_is_met_exactly_when_binding` *(parametrized: 'kind,target')* | A maximum payback is met exactly when binding. |
+| `test_an_impossible_hurdle_means_no_investment_not_an_infeasible_model` | An impossible hurdle means no investment not an infeasible model. |
+| `test_hurdle_input_errors` | Hurdle input errors. |
+| `test_one_weighted_year_gives_the_same_investment_as_the_full_chronology` *(parametrized: 'hurdles,inflation')* | 6 years stacked (1008 steps) vs the week once, weighted (168 steps): same sizes, and NPV, IRR, payback and yearly cash flows within 1 % (also with inflation). They differ only by the storage level at the year boundaries (stacked: carried over; weighted: each year ends at its start level) - here 0.3 % of the NPV with a week as the base period, ~50x less with a calendar year. |
+| `test_emission_cap_counts_every_year_in_the_weighted_model` | The CO2 cap is on the whole run: the weighted week stands for 6 years of emissions (~208 t with the investment, ~302 t without), as the stacked one does - counted once it would be a sixth. |
+| `test_fixed_soh_shrinks_the_usable_energy_not_the_power` | A 1 MWh battery at 80 % SoH stores 0.8 MWh: it moves 2 x 0.8 MWh from 10 to 100 EUR/MWh per base period (savings 2 x 90 x 0.8 = 144 instead of 180), and its SoC still reaches 100 % (of the usable energy). |
+| `test_fixed_soh_in_the_sizing_pays_capex_on_the_nominal_energy` | At 50 % SoH a nominal MWh stores half a MWh: the useful battery (1 MWh stored) is 2 MWh nominal and saves 394,200 EUR per year and usable MWh; CAPEX 300,000 per nominal MWh -> NPV 2 x 394,200 - 2 x 300,000. |
+| `test_soh_curves_or_a_fixed_soh_not_both` | Soh curves or a fixed soh not both. |
+| `test_a_self_sufficiency_target_builds_what_it_takes_and_no_more` | A self sufficiency target builds what it takes and no more. |
+| `test_without_a_target_the_unprofitable_pv_is_not_built` | Without a target the unprofitable pv is not built. |
+| `test_an_unreachable_self_sufficiency_is_explained` | An unreachable self sufficiency is explained. |
+
 ### `validation/test_storage.py`
 
 Validation: storage dispatch and energy accounting.
@@ -188,11 +292,30 @@ Validation: storage dispatch and energy accounting.
 | `test_end_conditions` *(parametrized: 'end, kw, expected')* | cyclic_eq returns to soc_init; fixed ends at soc_end (as a fraction of e_max = 1 MWh). |
 | `test_cyclic_geq_end_condition` | Default end condition: final energy >= initial energy. |
 | `test_tie_break_prevents_simultaneous_charge_discharge` | With equal prices, any cycling is pointless; the tie-break keeps the battery idle, and the tie-break cost is excluded from total_cost. |
+| `test_state_of_charge_is_energy_over_capacity` | Results report the storage state of charge next to its energy: soc = e / e_max. A lossless 4 MWh battery starts at soc 0.25 (1 MWh) and must cover 2 MWh of demand at 100 EUR/MWh: it charges 1.8 MWh at 10 EUR/MWh (soc 0.7) and ends exactly at soc_min = 0.2. |
+| `test_max_cycles_per_period` *(parametrized: 'period, limit, expected_cycles')* | max_cycles caps equivalent full cycles per calendar period, a cycle = (stored + removed energy) / 2 / e_max. Two days with the same cheap-night / expensive-evening prices: with 0.5 cycles a day the battery moves 0.5 x 2 x 2 MWh = 2 MWh per day; with 1 cycle per year it can shift that throughput between days. |
+| `test_cycles_count_stored_energy` | Cycles are counted on the energy stored and removed, after losses: (eta_ch * charged + discharged / eta_dis) / 2 / e_max. With eta 0.8 / 0.9 and 1 cycle a day, the battery stores 2 MWh and removes 2 MWh: it draws 2 / 0.8 = 2.5 MWh and delivers 2 * 0.9 = 1.8 MWh. Terminal-side counting would give (2.5 + 1.8) / 2 / 2 = 1.075. |
+| `test_simultaneous_charge_and_discharge_is_reported` | At a negative price (-20) the LP burns energy through battery losses: with e_max = 1, soc_init = 0.5 and eta = 0.9 it can store only 0.5 MWh more, so charging at the full 1 MW needs 0.9 * (0.9 - 0.5) = 0.36 MW discharge at the same time (import 1.64 MW instead of 1.56 MW). ``simultaneous()`` reports that overlap and the KPIs count the step; at positive prices nothing is reported. |
 
 ## Integration tests
 
 Config round-trip, command line, shipped examples, UI backend (FastAPI) and the UI in a headless browser.
 
+
+### `integration/test_cloud.py`
+
+Cloud runs (oems.cloud) with the worker run in this process instead of on Modal: the job is packed, solved and
+
+| Test | What it checks |
+|---|---|
+| `test_lifetime_optimisation_in_the_cloud_equals_the_local_run` | Lifetime optimisation in the cloud equals the local run. |
+| `test_input_series_travel_with_the_job` | The job carries the series it uses (loaded here), not the dataset paths: the worker cannot read them. |
+| `test_errors_come_back_as_the_same_errors` | Errors come back as the same errors. |
+| `test_single_period_run_in_the_cloud` | Single period run in the cloud. |
+| `test_availability_is_reported_with_a_reason` | Availability is reported with a reason. |
+| `test_ui_run_with_compute_cloud` | Ui run with compute cloud. |
+| `test_a_cloud_run_can_be_stopped` | Setting the cancel event stops the jobs that have not finished (in the cloud: their machines) - RunCancelled. |
+| `test_with_hurdles_the_cloud_solves_the_reference_first` | The sized model is bounded by the reference case's result: two jobs one after the other, same as locally. |
 
 ### `integration/test_config_and_examples.py`
 
@@ -214,22 +337,42 @@ Integration: UI backend (FastAPI) - catalog, datasets, graph translation, valida
 
 | Test | What it checks |
 |---|---|
-| `test_catalog_lists_components_with_connectors` | The palette catalog lists every component with its energy connectors (direction, carrier kind), data connectors, presets and partner ports. |
+| `test_catalog_lists_components_with_connectors` | The palette catalog lists every component with its energy connectors (direction, carrier kind), data connectors and presets. |
 | `test_dataset_upload_detects_resolution` *(parametrized: 'freq')* | An uploaded CSV is parsed, its resolution (1h / 15min) detected and a sparkline preview returned. |
 | `test_bad_csv_rejected` | A CSV without a datetime column is rejected with HTTP 400. |
 | `test_graph_to_config_maps_wires` | Energy wires set the components' bus fields, data wires become `{series: dataset:column}` references, days x resolution gives the step count. |
 | `test_graph_errors_are_keyed_by_node` | Storage ports wired to two different buses, and an unconnected demand, are reported per node. |
+| `test_port_wires_take_their_direction_from_the_port` | Energy wires have no direction: component port -> bus port is an inflow or outflow by the port's meaning, a `link` port is both, and an unknown port is an error. |
+| `test_converter_ports_take_direction_from_its_definition` | A converter's in/out keys decide the direction of its port wires, even when both go to one bus side. |
+| `test_legacy_supply_withdraw_wires_still_map` | Graphs from older projects (component -> bus 'supply', bus 'withdraw' -> component) give the same config. |
 | `test_converter_graph` | Converter connectors in1/out1 map to inputs/outputs by the wired bus; capacity follows the selection. |
 | `test_validate_endpoint_reports_missing_parameter` | A missing required parameter (storage e_max) is reported by /api/validate under the block's node id. |
 | `test_run_end_to_end` | Run via the API; the wire energies in the summary equal the flow matrix of the results. |
 | `test_run_at_15min_with_hourly_data` | Hourly data drives a 15-min model (data are aligned automatically). |
 | `test_infeasible_run_points_at_bus` | An infeasible run (grid too small, no storage) fails and the diagnosis is attached to the bus block where the balance fails. |
-| `test_projects_save_and_load` | Projects (settings + canvas layout) are saved to and loaded from the workspace. |
+| `test_projects_save_and_load` | Projects (settings + canvas) are saved to and loaded from the logged-in user's workspace folder. |
+| `test_projects_need_login_and_are_per_user` | Cases are only visible to the user who saved them; without a login the project API answers 401. |
+| `test_project_variants_keep_their_parent_through_rename_and_delete` | A project saved with "variant_of" is listed with its parent (the sidebar project tree nests it there); renaming the parent follows it, and deleting a project moves its variants up to that project's own parent. |
+| `test_first_account_adopts_projects_saved_before_logins` | First account adopts projects saved before logins. |
+| `test_daily_profile_block_repeats_on_every_day` | A daily-profile block wired to the demand becomes `{daily: [...]}` in the config; the run draws that day on both days, and the per-step table lists it as a 'daily profile' input. A profile that does not split a day is an error on its block. |
+| `test_simulation_save_reopen_and_delete` | A finished run saved as a simulation keeps its canvas, config, summary, plot series and CSV zip; it is listed, served unchanged after a server restart (new app on the same workspace), can be renamed and deleted. |
+| `test_simulation_save_needs_finished_run` | Saving an unknown run is a 404; an unknown or malformed simulation id is a 404 (no path traversal). |
 | `test_index_and_static` | The UI page and all static scripts/styles are served. |
 | `test_tutorial_dataset_is_registered_once` | POST /api/tutorial/data adds the tutorial dataset (48 hourly rows, price/pv_cf/heat_load) and returns the same dataset on a second call instead of a duplicate. |
 | `test_page_and_scripts_are_revalidated` | The page and static scripts are sent with Cache-Control: no-cache, so after an update the browser never runs old cached scripts against the new page. |
 | `test_single_link_wire_equals_two_port_wires` | A grid or storage wired with its single ⇄ `link` connector gives exactly the same config as wiring import/export (charge/discharge) separately, so old two-wire projects and new one-wire projects agree. |
 | `test_catalog_declares_link_connectors` | Grid connection and storage declare one ⇄ link connector for both ports; other components have none. |
+| `test_per_step_table_of_flows_states_prices_and_inputs` | The time-series table has one row per step with every wire's flow, storage states, bus marginal prices and the input series the optimiser used (named after their dataset); each step balances the bus; it pages as JSON, downloads as CSV, is in the results zip and stays available from a saved simulation. |
+| `test_inspector_series_and_column_filter` | The inspector gets whole series of chosen columns (thinned to bin means only above its point limit), a table page and a CSV restricted to the chosen columns; an unknown column is a 404. |
+| `test_excel_downloads_and_report` | Inspector downloads: the per-step table as Excel (all columns plus a Summary sheet, or only the selected columns) reads back to the same numbers as the CSV. The report is one HTML page with the system picture, key inputs, key outputs and charts, for a live run and for the saved simulation. |
+| `test_simultaneous_flows_are_highlighted` | When a storage charges and discharges in the same step (here: burning energy at a negative price), the run summary carries a notice, the block a badge, and the per-step table a ``check`` column with the overlap. |
+| `test_variable_size_merges_into_the_sized_components` | Variable size merges into the sized components. |
+| `test_variable_size_without_run_settings_block_and_from_older_projects` | Variable size without run settings block and from older projects. |
+| `test_investment_hurdles_go_into_the_lifetime_config` | Investment hurdles go into the lifetime config. |
+| `test_variable_size_errors` | Variable size errors. |
+| `test_lifetime_optimisation_run_end_to_end` | Lifetime optimisation run end to end. |
+| `test_co2_cap_comes_from_the_run_settings_block` | Co2 cap comes from the run settings block. |
+| `test_a_running_local_run_can_be_stopped` | A long multi-year run (60 years of a 30-day base period, one solve each) is stopped while it runs: its worker process ends at once and the run reports 'cancelled'; stopping a finished run changes nothing. |
 
 ### `integration/test_ui_browser.py`
 
@@ -240,9 +383,46 @@ End-to-end browser test of the drag-and-drop UI (headless Chromium via Playwrigh
 | `test_drag_wire_run` | Build grid + battery + demand on a bus (one ⇄ wire each for grid and battery), add uploaded CSV columns as separate input blocks, wire them, run, and check the results overlay. |
 | `test_properties_panel_edits_parameters` | Editing a field in the properties panel updates the block's parameters, and renaming updates the block title. |
 | `test_converter_add_output` | '+ output' on a converter adds a new energy connector (out2) to the block. |
+| `test_panes_resize_and_close` | The palette, properties panel and results drawer can be drag-resized, closed and reopened (and selecting a block reopens the properties panel); properties and results start closed on every load. |
 | `test_tutorial_walkthrough` | The in-app tutorial: its checklist ticks for a block placed by hand (real drag of a Bus), "Do it for me" completes every other step, and the three runs reproduce the expected costs shown in the card (3240 EUR grid only, then with PV + battery and with the heat section). |
 | `test_bus_kind_change_renames_default_carrier` | Switching a new bus from electricity to heat in the panel also changes its default carrier and name (el -> heat), so two buses never share a carrier name with different kinds; custom names are kept. |
-| `test_wires_can_start_at_either_end_and_drop_on_blocks` | Wires can be pulled from a component's own input connectors (energy and parameter) to a bus or input block, and can be dropped anywhere on a block: the matching connector is chosen (bus supply/withdraw, the free energy input, the only free parameter). Invalid drops still go through the wiring rules. |
+| `test_wires_can_start_at_either_end_and_drop_on_blocks` | Wires can be pulled from a component's energy port to a bus, from a bus port or a parameter back to a block, and can be dropped anywhere on a block: the matching connector is chosen (the bus port, the free energy port, the only free parameter). Invalid drops still go through the wiring rules. |
+| `test_bus_takes_wires_all_around_its_outline` | A bus is connectable on its whole outline: each wire ends on the bus edge facing the block it comes from (top, bottom, left, right), dragging the bus's middle still moves it, and moving it keeps the wires on its outline. |
+| `test_wire_snaps_to_the_bus_point_it_is_dropped_on` | Pulling a wire over a bus shows snap points around its outline; the wire ends on the one it is dropped on (here the far side of the bus, not the side facing the block), keeps it when the bus moves, and saves it. |
+| `test_old_supply_withdraw_project_is_converted_on_load` | A project saved with bus supply/withdraw connectors (and split grid import/export wires) opens with one bus port: every energy wire runs component port -> bus port, split ports become the one ⇄ link wire. |
+| `test_db_connection_and_db_input` | DB connection block: enter host/user/password, Connect, pick the database from the dropdown. DB input block: choose zone and series from the database catalogue, preview, wire to the grid price and run. The password is never part of the saved project. |
+| `test_pv_profile_from_db_feeds_pv_cf` | The palette's '☀️ PV profile' item places a DB input on the database's first modelled PV system (using the default .env login); wired to a PV block's cf it shows up as that block's capacity-factor input. |
+| `test_daily_profile_block_is_drawn_typed_and_feeds_a_demand` | The palette's '🕒 Daily profile' places a 24-value block; dragging across its chart sets values, a table cell types one, switching to 96 values per day repeats each hour four times, and pasted values replace the day. Wired to a demand it shows as that demand's profile input and the run uses it. |
+| `test_blocks_and_palette_tiles_explain_themselves_on_hover` | Every block tile in the side bar and every block on the canvas has a tooltip saying what it does: presets their own text, plain components their type's, inputs and settings blocks theirs; a placed block shows the same text as its tile. |
+| `test_renamed_block_keeps_its_name_after_reopening` | Renaming a block in its panel changes its title on the canvas, and the title survives export / import (saving and reopening a project); a project saved while renames were lost shows each block's name again. |
+| `test_start_hint_shows_on_an_empty_canvas_until_a_project_is_opened` | The empty canvas shows how to start; opening a project or placing a first block removes the hint. |
+| `test_saved_cases_window_with_login` | Open asks for a login, then lists only that user's cases in a window: open, rename and delete them. |
+| `test_battery_cycle_limit_in_panel` | The battery block's panel has a Cycling section: Max cycles (empty = no limit) per day/week/month/year. |
+| `test_pv_curtailment_tick_box` | The PV block has an 'Allow curtailment' tick box, ticked by default; unticking it sets curtailable=false. |
+| `test_base_period_years_and_year_selector` | Run settings: a calendar base year fixes start / days (366 for 2024) and hides them; the multi-year mode shows years and the discount rate. A '📉 Degradation curve' block (the database's first profile) wires only to a battery's SoH curves; a 3-year run gets a year selector that switches the summary, the battery's SoH badge and Inspect. |
+| `test_project_save_keeps_the_results` | Save stores the results on show with the project (as a saved simulation); opening the project shows them again without running. |
+| `test_investment_block_and_lifetime_optimisation` | A ⚙️ Run settings block (not wired) holds the CO₂ cap; switching the battery to Variable size (in its own panel) shows its size limits and CAPEX / OPEX there, marks its size fields and lists it in the Run settings block. ▶ Run preselects Lifetime optimisation, and Start stays disabled until CAPEX and OPEX are entered. The run shows a Sizing tab with the NPV, IRR (against its minimum-IRR hurdle) and payback, and the optimal size on the battery block. |
+| `test_stop_a_running_run` | The run shows in the top bar while the canvas stays usable; ■ Stop ends a long run (a year at 15 min): the progress closes, the Run button comes back and no results are shown. |
+| `test_project_tree_shows_variants_under_their_project` | The Blocks sidebar shows the user's projects as a tree: ⑂ Variant saves the canvas as a variant of the open project (saving that first) and switches to it; variants nest under their project, the open one is highlighted, clicking one opens it (asking first when there are unsaved changes) and ▾ folds a project's variants. |
+| `test_older_projects_move_their_sizing_onto_the_components` | Projects saved with the sizes to optimise in the ⚙️ Run settings block get them on the PV / storage blocks. |
+
+### `integration/test_ui_dbsource.py`
+
+Integration: DB connection + DB input blocks - BESS IQ series fetched, aligned to the model grid and used like
+
+| Test | What it checks |
+|---|---|
+| `test_to_grid_averages_finer_and_holds_coarser_points` | 15-min points are averaged into hourly steps; hourly points are held over 15-min steps. |
+| `test_to_grid_refuses_to_hold_across_long_gaps` | A horizon beyond the end of the data is an error, not a silently repeated last value. |
+| `test_db_input_feeds_a_parameter` | A DB input wired to the grid's import price runs like an uploaded input; the cost matches the price data (hourly 50 €/MWh before 12:00 UTC on Jan 1, then hourly means of the 15-min prices: 56 / 66 €/MWh). |
+| `test_db_preview_tariff_and_transform` | Preview returns the aligned series' stats; the tariff source and the K → °C transform are applied. |
+| `test_solar_pv_profile_is_a_capacity_factor` | The solar source divides the modelled PV output by the system's MWp (0.8 MW / 2 MWp = 0.4) and feeds a PV producer's cf: a 1 MW PV then covers 0.4 of a 0.5 MW demand from 10:00 to 14:00 UTC; the rest is bought at the DB tariff of 40 €/MWh. |
+| `test_db_errors_are_attached_to_the_block` | Missing data, incomplete settings and a missing connection show up as errors on the DB input block. |
+| `test_db_input_without_connection_block_uses_env_login` | With no DB connection block on the canvas, DB inputs use the login in the project's .env (SUPABASE_DB_URL), so a project needs no connection set-up. |
+| `test_connect_lists_databases_and_options` | Connecting a DB connection block lists the server's databases; the DB input's dropdowns come from the database catalogue. The password is stored by login, never returned. |
+| `test_passwords_are_stored_privately_per_login` | Passwords are kept per user@host:port, owner-readable only; the BESS IQ .env login is used as a default. |
+| `test_degradation_profile_feeds_a_multi_year_run` | A degradation DB input (profile 'short' of the fake DB) wired to a battery's SoH curves, with a 4-year simulation of the 2-day base period: the summary has one Lifetime row per year with falling capacity, each year can be inspected, the Excel export has a Lifetime sheet, the results zip a lifetime.csv and the report a Lifetime section; a saved simulation keeps every year (summary and per-step table). |
+| `test_degradation_curves_only_feed_soh_curves` | Degradation curves only feed soh curves. |
 
 ## Performance tests
 
@@ -256,3 +436,11 @@ Performance: full-year runs of the electrification example with timing budgets.
 | Test | What it checks |
 |---|---|
 | `test_full_year_electrified` *(parametrized: 'freq, steps, build_budget, solve_budget')* | A full year of the electrified site (13 components, 5 buses) builds and solves within budget: hourly < 30 s build / 120 s solve, 15-min < 60 s build / 600 s solve. Times are printed. |
+
+### `performance/test_lifetime_sizing.py`
+
+Performance: a one-shot lifetime optimisation of PV + battery sizes over 15 hourly years (131,400 steps).
+
+| Test | What it checks |
+|---|---|
+| `test_fifteen_hourly_years_in_one_model` | 15 x 8760 hourly steps, PV and battery sized, plus the reference case: two solves (interior point, the default for lifetime horizons), each within 15 minutes. Times and the result are printed. |

@@ -7,6 +7,7 @@ from dataclasses import KW_ONLY, dataclass
 import numpy as np
 import pyomo.environ as pyo
 
+from ..costs import CostCategory
 from ..exceptions import ValidationError
 from ..ports import Direction, Port
 from ..schema import Kind, param
@@ -23,14 +24,16 @@ class GridConnection(Component):
 
     Costs come from ``tariffs`` plus the convenience arguments ``import_price``, ``import_fee``,
     ``export_price``, ``export_fee`` and ``peak_charge`` (all EUR/MWh or EUR/MW per period).
-    ``max_export`` defaults to 0, i.e. import-only unless stated otherwise.
+    ``max_import`` and ``max_export`` default to no limit (inf); set ``max_export=0`` for an import-only
+    connection. Exports earn nothing unless an ``export_price`` (or another export credit) is given.
+    ``co2_price`` (EUR/t) prices the connection's CO2 emissions in place of the system emission policy price.
     """
 
     bus: object = param(Kind.BUS)
     _: KW_ONLY
     tariffs: list = param(Kind.TARIFFS, default_factory=list, group="Tariffs")
     max_import: object = param(Kind.SERIES, float("inf"), unit="MW", series="power", min=0)
-    max_export: object = param(Kind.SERIES, 0.0, unit="MW", series="power", min=0)
+    max_export: object = param(Kind.SERIES, float("inf"), unit="MW", series="power", min=0)
     exclusive: bool = param(Kind.BOOL, False, help="Discourage simultaneous import and export (LP relaxation)")
     import_price: object = param(Kind.SERIES, None, unit="EUR/MWh", series="rate", connector=True, group="Tariffs")
     import_fee: object = param(Kind.SERIES, None, unit="EUR/MWh", series="rate", connector=True, group="Tariffs")
@@ -39,6 +42,8 @@ class GridConnection(Component):
     peak_charge: float = param(Kind.SCALAR, None, unit="EUR/MW/period", min=0, group="Tariffs")
     peak_period: str = param(Kind.PERIOD, "M", group="Tariffs")
     peak_measurement: str = param(Kind.ENUM, "step", choices=MEASUREMENTS, group="Tariffs")
+    co2_price: object = param(Kind.SERIES, None, unit="EUR/t", series="rate", connector=True, group="Emissions",
+                              help="CO2 price on this connection's emissions (needs a CO2 factor on the bus)")
     credit_export_emissions: bool = param(Kind.BOOL, False, group="Emissions",
                                           help="Credit avoided emissions on export with the import factor")
 
@@ -75,6 +80,9 @@ class GridConnection(Component):
                 out.setdefault("export", {})[gas] = -arr
         return out
 
+    def emission_prices(self):
+        return {} if self.co2_price is None else {"co2": self.r.co2_price}
+
     def resolved_emission_factors(self, grid, report):
         out = super().resolved_emission_factors(grid, report)
         if self.credit_export_emissions and "import" in out:
@@ -86,6 +94,10 @@ class GridConnection(Component):
         warnings = []
         for t in self.r.all_tariffs:
             warnings += [f"{self.name}: {w}" for w in t.check(grid)]
+        if self.co2_price is not None and not any("co2" in g for g in self.default_emission_factors().values()) \
+                and not any("co2" in dict(g) for g in self.emission_factors.values()):
+            warnings.append(f"{self.name}: co2_price is set but the connection has no CO2 emission factor "
+                            "(set one on the bus), so it costs nothing")
         if self.exclusive and (np.any(~np.isfinite(self.r.max_import)) or np.any(~np.isfinite(self.r.max_export))):
             raise ValidationError(f"{self.name}: exclusive=True requires finite max_import and max_export")
         cost_imp = np.zeros(grid.n)    # EUR/MWh paid per MWh imported
@@ -99,6 +111,13 @@ class GridConnection(Component):
             else:
                 credit_exp -= sign * t.r.rate
         risky = (credit_exp > cost_imp + 1e-9) & (self.r.max_export > 0)
+        unlimited = risky & ~np.isfinite(self.r.max_import) & ~np.isfinite(self.r.max_export)
+        if np.any(unlimited):
+            t = grid.index[int(np.argmax(unlimited))] if grid.is_datetime else int(np.argmax(unlimited))
+            raise ValidationError(
+                f"{self.name}: export credit exceeds import cost in {int(unlimited.sum())} steps (first at {t}) and "
+                "import and export are unlimited, so buying and selling at once would earn without bound; "
+                "set max_import / max_export or make export pay less than import costs")
         if np.any(risky) and not self.exclusive:
             warnings.append(f"{self.name}: export credit exceeds import cost in {int(risky.sum())} steps; "
                             "simultaneous import/export arbitrage is possible - consider exclusive=True")
@@ -122,6 +141,12 @@ class GridConnection(Component):
         for terms in self._tariff_costs:
             for cat, expr in terms.items():
                 out[cat] = out.get(cat, 0) + expr
+        self._tariff_costs = []     # handed over: kept here they would tie the solved model to the component
+        if ctx.tie_break and np.any(self.r.max_export > 0) and any(isinstance(t, EnergyCredit)
+                                                                    for t in self.r.all_tariffs):
+            # paid exports: importing and exporting the same MW at one price is otherwise an equally cheap optimum
+            tb = np.full(ctx.n, ctx.tie_break)
+            out[CostCategory.TIEBREAK] = ctx.wsum(tb, F["import"]) + ctx.wsum(tb, F["export"])
         return out
 
     def periodic(self, blk) -> dict:

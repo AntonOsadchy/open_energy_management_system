@@ -80,6 +80,21 @@ def _intervals(grid, period, measurement, mask):
     return result, int(k_ids.max()) + 1
 
 
+def _group_weights(grid, ids: np.ndarray) -> np.ndarray:
+    """Cost weight of each billing group (``ids`` from ``grid.groups``): the weight of its first step, so a charge
+    per period is discounted with the year it falls in (all 1 outside lifetime runs)."""
+    _, first = np.unique(ids, return_index=True)
+    return grid.cw[first]
+
+
+def _scaled_period_warning(grid, what: str) -> list[str]:
+    hz = grid.horizon
+    if hz is None or hz.year_scale == 1:
+        return []
+    return [f"{what} per billing period: the base period is {hz.base_days:g} days, scaled by {hz.year_scale:.3g} to a "
+            "year, so charges per month or day are scaled with it; use a full calendar year as base period"]
+
+
 @register_tariff
 @dataclass(eq=False)
 class PeakCharge(Tariff):
@@ -104,7 +119,7 @@ class PeakCharge(Tariff):
         if not exact:
             warnings.append(f"PeakCharge measurement {self.measurement!r} is finer than the model step "
                             f"({grid.freq}); peaks are measured per step and may be underestimated")
-        return warnings
+        return warnings + _scaled_period_warning(grid, "PeakCharge")
 
     def build(self, blk, flow, ctx):
         intervals, n_k = _intervals(ctx.grid, self.period, self.measurement, self.r.window)
@@ -119,7 +134,8 @@ class PeakCharge(Tariff):
             return b.pk[k] >= pyo.quicksum(float(dt[t] / dur) * flow[int(t)] for t in steps)
 
         blk.peak = pyo.Constraint(blk.I, rule=rule)
-        return {CostCategory.PEAK: pyo.quicksum(self.r.rate * blk.pk[k] for k in blk.K)}
+        gw = _group_weights(ctx.grid, ctx.grid.groups(self.period))
+        return {CostCategory.PEAK: pyo.quicksum(self.r.rate * float(gw[k]) * blk.pk[k] for k in blk.K)}
 
 
 @register_tariff
@@ -136,7 +152,7 @@ class CapacityLimit(Tariff):
     def build(self, blk, flow, ctx):
         intervals, _ = _intervals(ctx.grid, None, self.measurement, None)
         lim = self.r.limit
-        dt, w = ctx.dt, ctx.w
+        dt, w = ctx.dt, ctx.cw
         data = []
         for _k, steps in intervals:
             dur = float(dt[steps].sum())
@@ -169,6 +185,9 @@ class FixedCharge(Tariff):
     _: KW_ONLY
     period: str = param(Kind.PERIOD, "M")
 
+    def check(self, grid):
+        return _scaled_period_warning(grid, "FixedCharge")
+
     def build(self, blk, flow, ctx):
-        n = int(ctx.grid.groups(self.period).max()) + 1
-        return {CostCategory.FIXED: float(self.r.amount) * n}
+        gw = _group_weights(ctx.grid, ctx.grid.groups(self.period))
+        return {CostCategory.FIXED: float(self.r.amount) * float(gw.sum())}

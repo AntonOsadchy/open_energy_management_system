@@ -3,89 +3,243 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Open EMS</title>
+<title>Microgrid Sizing Tool</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.css">
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/drawflow@0.0.59/dist/drawflow.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-bus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M8 21l4-18 4 18M6 9h12M5 14h14M9 9l6 5M15 9l-6 5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 5h14l2 10H3z"/><path d="M4 10h16M10 5l-1 10M14 5l1 10M12 15v5M8 20h8"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 21V10l5 3V10l5 3V5h4l1 16z"/></symbol>
+  <symbol id="i-shift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/></symbol>
+  <symbol id="i-sink" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 8h11a3 3 0 1 0-3-3M4 12h15a3 3 0 1 1-3 3M4 16h7"/></symbol>
+  <symbol id="i-thermo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 14V4a2 2 0 1 1 4 0v10a4 4 0 1 1-4 0z"/><path d="M12 9v7"/></symbol>
+  <symbol id="i-battery" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10v4"/><path d="M6 10h5v4H6z" fill="currentColor"/></symbol>
+  <symbol id="i-tank" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="2.5"/><path d="M5 5v14c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5"/><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
+  <symbol id="i-hp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="10" cy="12" r="4"/><path d="M10 8v8M6 12h8M17 8v8"/></symbol>
+  <symbol id="i-flame" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 21c-4 0-7-2.7-7-6.5C5 10 9 8 9 3c3 1.5 6 5 6 8 1-1 1.5-2 1.5-3C18.5 10 19 12.5 19 14.5 19 18.3 16 21 12 21z"/></symbol>
+  <symbol id="i-snow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7M9 4l3 2 3-2M9 20l3-2 3 2"/></symbol>
+  <symbol id="i-chp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M13 2L5 13h6l-1 9 8-11h-6z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-convert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h14l-3-3M20 16H6l3 3"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="3"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+  <symbol id="i-day" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18c3 0 3-9 6-9s3 5 6 5 3-8 6-8"/><path d="M3 21h18"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></symbol>
+  <symbol id="i-soh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M6 7c4 1 7 3 9 7l4 4"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 4h14v10l-6 6H5z"/><path d="M13 20v-6h6M8 9h8M8 12h5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-blocks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l3-7 4 14 3-7h7"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.6v.6"/><circle cx="12" cy="17" r=".6" fill="currentColor"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-12 7"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+</defs></svg>
 <header id="topbar">
-  <div class="brand">Open EMS</div>
-  <div class="group">
-    <button id="btn-new" title="New project">New</button>
-    <button id="btn-open" title="Open a saved project">Open</button>
-    <button id="btn-save" title="Save project">Save</button>
-    <input id="set-name" value="site" size="10" title="Project name">
+  <img src="/static/logo.svg" alt="Microgrid Sizing Tool" title="Microgrid Sizing Tool" class="logo">
+  <div id="proj-switcher">
+    <button id="proj-switch" aria-haspopup="menu" aria-expanded="false" title="Switch project, start a new one or rename this one"><span
+      id="set-name" class="proj-name"></span><svg class="chev"><use href="#i-chevron"/></svg></button>
+    <div id="proj-menu" class="menu" role="menu" hidden>
+      <input id="pm-search" type="search" placeholder="Find project…" autocomplete="off" aria-label="Find project">
+      <div id="pm-list"></div>
+      <hr><button id="pm-rename" role="menuitem"><svg><use href="#i-pencil"/></svg>Rename…</button>
+      <button id="pm-new" role="menuitem"><svg><use href="#i-plus"/></svg>New project…</button>
+      <button id="btn-open" role="menuitem"><svg><use href="#i-list"/></svg>All projects and runs…</button>
+    </div>
   </div>
-  <div class="group settings">
-    <label>Start <input id="set-start" type="date" value="2025-01-01"></label>
-    <label>Days <input id="set-days" type="number" value="7" min="1" step="1" style="width:4.5em"></label>
-    <label>Resolution <select id="set-freq"><option>1h</option><option>30min</option><option>15min</option></select></label>
-    <label>TZ <input id="set-tz" value="Europe/Copenhagen" size="15"></label>
-    <label>CO₂ price <input id="set-co2" type="number" placeholder="€/t" style="width:5em"></label>
-    <label>CO₂ cap <input id="set-co2cap" type="number" placeholder="t" style="width:5em"></label>
+  <button id="save-dot" hidden title="Click or press ⌘S / Ctrl+S to save"></button>
+  <div class="group" id="run-group">
+    <button id="btn-run" class="primary" title="Choose the run settings (period, years, resolution …) and start">▶ Run</button>
+    <div id="run-progress" hidden title="The run solves in the background: keep editing; its results are for the canvas as it was when you pressed Run">
+      <span class="spin"></span><span id="rp-text">Running…</span><span id="rp-time"></span>
+      <button id="rp-stop" class="small" title="Stop this run: a local run's solver process ends now, a cloud run's machines are shut down (billing stops)">■ Stop</button>
+      <div class="rp-bar"><i id="rp-fill"></i></div></div>
   </div>
-  <div class="group">
-    <button id="btn-validate">Validate</button>
-    <button id="btn-run" class="primary">▶ Run</button>
-    <button id="btn-config" title="Download the system config (YAML) to run headless">Export config</button>
-  </div>
-  <div class="group"><button id="btn-tutorial" title="Step-by-step guide: build a small site">🎓 Tutorial</button></div>
+  <div id="user-chip"></div>
 </header>
 <main>
   <aside id="palette">
-    <section>
-      <h3>Nodes</h3>
-      <div class="pal-item bus" draggable="true" data-kind="bus">⬤ Bus</div>
-    </section>
-    <section id="inputs">
-      <h3>Inputs</h3>
-      <label class="pal-item data upload">⤒ Upload CSV data<input id="file-upload" type="file" accept=".csv" hidden></label>
-      <div id="dataset-list"></div>
-    </section>
-    <div id="palette-components"></div>
-    <section><h3>Presets</h3><div id="palette-presets"></div></section>
-    <p class="hint">Drag blocks onto the canvas. Wire energy from components to a bus <b>supply</b>, from a bus
-      <b>withdraw</b> to components, and inputs to the grey parameter connectors. Grids and storages have one
-      <b>⇄</b> connector for both directions.</p>
+    <nav class="rail" role="tablist" aria-label="Palette">
+      <button role="tab" data-tab="project" title="Your projects and their variants"><svg><use href="#i-folder"/></svg>Project</button>
+      <button role="tab" data-tab="inputs" title="Time series and data sources"><svg><use href="#i-wave"/></svg>Inputs</button>
+      <button role="tab" data-tab="blocks" title="Bus, components and run settings"><svg><use href="#i-blocks"/></svg>Blocks</button>
+      <button id="btn-tutorial" class="rail-foot" title="Step-by-step guide: build a small site"><svg><use href="#i-help"/></svg>Tutorial</button>
+    </nav>
+    <div class="pal-body">
+      <div class="pane-bar"><span id="pal-title">Building blocks</span><button class="pane-close" data-close="palette" title="Collapse the palette">✕</button></div>
+      <div class="pal-panel" data-panel="project">
+        <h3 class="pt-head"><span id="pt-title">Project</span> <span class="pt-acts">
+          <button id="btn-save" class="icon-btn" title="Save project (⌘S / Ctrl+S)"><svg><use href="#i-save"/></svg></button>
+          <button id="pt-variant" class="icon-btn" title="Save as variant"><svg><use href="#i-branch"/></svg></button>
+          <button id="pt-blank" class="icon-btn" title="New empty canvas in this project (saved as a variant)"><svg><use href="#i-plus"/></svg></button></span></h3>
+        <div id="proj-tree"></div>
+      </div>
+      <div class="pal-panel" data-panel="inputs">
+        <label class="pal-upload" title="Every column of the CSV becomes an input; the first column is the time">
+          <svg><use href="#i-upload"/></svg> Upload CSV data<input id="file-upload" type="file" accept=".csv" hidden></label>
+        <div id="dataset-list"></div>
+        <h3>Sources</h3>
+        <div class="tiles">
+          <div class="pal-item tile data" draggable="true" data-kind="profile"
+               title="Drag onto the canvas: type one day of values (hourly or finer); the run repeats it on every day"><span class="ico t-data"><svg><use href="#i-day"/></svg></span>Daily profile</div>
+          <div class="pal-item tile dbconn" draggable="true" data-kind="dbconn"
+               title="Drag onto the canvas: host, user, password and the database to pull from"><span class="ico t-data"><svg><use href="#i-key"/></svg></span>DB connection</div>
+          <div class="pal-item tile db" draggable="true" data-kind="db"
+               title="Drag onto the canvas: one series pulled through a DB connection (prices, tariffs, generation, weather …)"><span class="ico t-data"><svg><use href="#i-db"/></svg></span>DB input</div>
+          <div class="pal-item tile db" draggable="true" data-kind="db" data-preset="solar"
+               title="Drag onto the canvas: modelled PV output per MWp (0…1) - wire it to a PV block's cf"><span class="ico t-data"><svg><use href="#i-sun"/></svg></span>PV profile</div>
+          <div class="pal-item tile db" draggable="true" data-kind="db" data-preset="degradation"
+               title="Drag onto the canvas: battery SoH curves by cycling rate - wire it to a battery's SoH curves for multi-year runs"><span class="ico t-data"><svg><use href="#i-soh"/></svg></span>Degradation curve</div>
+        </div>
+        <p class="hint">Wire inputs to the grey parameter connectors (left side of a block).</p>
+      </div>
+      <div class="pal-panel" data-panel="blocks">
+        <div id="palette-blocks"></div>
+        <p class="hint">Wire a component's energy ports (right) to a bus; the model knows which way energy flows through
+          each port. Grids and storages have one <b>⇄</b> port for both directions.</p>
+      </div>
+    </div>
   </aside>
+  <div class="resizer col" data-pane="palette" title="Drag to resize"></div>
   <div id="canvas-wrap">
+    <button class="pane-open right" data-open="side" title="Show the properties panel">Properties ◂</button>
+    <button class="pane-open bottom" data-open="results" title="Show the results">▴ Results</button>
     <div id="drawflow"></div>
     <div id="zoom"><button data-z="in">+</button><button data-z="reset">⟳</button><button data-z="out">−</button></div>
     <div id="status"></div>
   </div>
+  <div class="resizer col" data-pane="side" title="Drag to resize"></div>
   <aside id="side">
+    <div class="pane-bar"><span>Properties</span><button class="pane-close" data-close="side" title="Close the properties panel">✕</button></div>
     <div id="tutorial" class="hidden"></div>
     <div id="panel"><div class="empty">Select a block to edit its properties.</div></div>
   </aside>
 </main>
 <section id="results" class="collapsed">
+  <div class="resizer row" data-pane="results" title="Drag to resize"></div>
   <div class="res-head">
     <strong>Results</strong>
+    <span id="res-name"></span>
     <nav id="res-tabs">
       <button data-tab="summary" class="active">Summary</button>
-      <button data-tab="costs">Costs</button>
-      <button data-tab="balance">Bus balance</button>
-      <button data-tab="component">Component</button>
+      <button data-tab="sizing" hidden>Sizing</button>
     </nav>
-    <span id="res-meta"></span>
-    <a id="res-download" href="#" download>Download CSV</a>
-    <button id="res-toggle">▴</button>
+    <label id="res-year-box" hidden title="Year of the multi-year run shown in the Summary, on the canvas and in Inspect">Year
+      <select id="res-year"></select></label>
+    <span class="res-spacer"></span>
+    <button id="res-inspect" class="small" disabled title="Open the time series of the shown results in a window (select a block first to focus on it)">🔍 Inspect</button>
+    <span id="res-download" class="res-dl" hidden title="Download the data of the selected tab (the shown year of a multi-year run)">⤓ Download
+      <button id="res-dl-csv" class="small">CSV</button><button id="res-dl-xlsx" class="small">Excel</button></span>
+    <button id="res-toggle" title="Minimise / expand">▴</button>
+    <button class="pane-close" data-close="results" title="Close the results">✕</button>
   </div>
   <div class="res-body">
     <div class="tab" data-tab="summary"><div id="res-summary"></div></div>
-    <div class="tab hidden" data-tab="costs"><div id="plot-costs" class="plot"></div></div>
-    <div class="tab hidden" data-tab="balance"><select id="sel-bus"></select><div id="plot-balance" class="plot"></div></div>
-    <div class="tab hidden" data-tab="component"><select id="sel-comp"></select><div id="plot-comp" class="plot"></div></div>
+    <div class="tab hidden" data-tab="sizing"><div id="sz-kpis"></div><div id="sz-plot" class="plot"></div><div id="sz-table"></div></div>
+    <label id="res-notes">Comments on the analysis <span id="res-notes-state" class="hint"></span>
+      <textarea id="res-notes-text" rows="3" placeholder="Findings, assumptions, open questions… (kept with the saved run and in the report)"></textarea></label>
   </div>
 </section>
+<!-- the settings of every run: shown in the Properties panel of the ⚙️ Run settings block (parked here otherwise);
+     App.settings() / applySettings() read and write these inputs -->
+<div id="run-settings-home" hidden><div id="run-settings" class="run-body">
+      <fieldset><legend>Run</legend>
+        <label class="run-mode"><input type="radio" name="run-mode" value="single" checked> <b>Single period</b>
+          <span class="hint">one optimisation of the base period</span></label>
+        <label class="run-mode"><input type="radio" name="run-mode" value="multi_year"> <b>Multi-year</b>
+          <span class="hint">the base period repeated year by year with fixed sizes and battery degradation (📉 SoH curves)</span></label>
+        <label class="run-mode" id="run-mode-opt"><input type="radio" name="run-mode" value="optimise"> <b>Lifetime optimisation</b>
+          <span class="hint">sizes of the PV and storages switched to variable size, over the whole lifetime;
+            maximises the NPV and reports IRR and payback</span></label>
+      </fieldset>
+      <fieldset><legend>Period</legend>
+        <label title="Base period: a calendar year of input data (repeated every simulated year), or Custom start / days">Base period
+          <select id="set-base"><option value="">Custom</option></select></label>
+        <label class="custom-period">Start <input id="set-start" type="date" value="2025-01-01"></label>
+        <label class="custom-period">Days <input id="set-days" type="number" value="7" min="1" step="1"></label>
+        <label id="lbl-years" title="The base period is repeated this many years">
+          <span id="lbl-years-text">Years</span> <input id="set-years" type="number" value="1" min="1" max="60" step="1"></label>
+        <label id="lbl-lifemodel" hidden title="Without degradation every year is the same year: one year weighted by the discount factors gives the same sizes and economics as all years in sequence, many times faster. 'Every year' stacks them all (full chronology).">Model
+          <select id="set-lifemodel"><option value="weighted">one year, weighted (fast)</option>
+            <option value="full">every year in sequence</option></select></label>
+        <input id="set-discount" type="hidden" value="0">
+        <input id="set-inflation" type="hidden" value="0">
+        <label>Resolution <select id="set-freq"><option>1h</option><option>30min</option><option>15min</option></select></label>
+        <label title="Local time of the model: naive CSV timestamps are read in it, days and months (peak charges, cycle limits, windows) follow it and DST days have 23 / 25 hours. Set from the BESS IQ zone when you choose one; empty = naive time">Time zone
+          <input id="set-tz" value="Europe/Copenhagen" list="tz-list" placeholder="naive (no DST)"></label>
+        <datalist id="tz-list"><option>Europe/Copenhagen</option><option>Europe/Berlin</option><option>Europe/Stockholm</option>
+          <option>Europe/Oslo</option><option>Europe/Helsinki</option><option>Europe/London</option><option>UTC</option></datalist>
+        <label title="Stop the solver after this many seconds (empty = no limit)">Time limit s
+          <input id="set-timelimit" type="number" min="1" step="1" placeholder="none"></label>
+      </fieldset>
+      <fieldset><legend>Compute</legend>
+        <label class="run-mode"><input type="radio" name="run-compute" value="local" checked> <b>This computer</b>
+          <span class="hint">solve here</span></label>
+        <label class="run-mode" id="run-compute-cloud"><input type="radio" name="run-compute" value="cloud"> <b>Cloud (Modal)</b>
+          <span class="hint">a machine with more memory starts for this run and stops after it; billed per second</span></label>
+      </fieldset>
+      <div id="run-info"></div>
+      <div class="rs-foot"><button type="button" id="btn-config" title="Download the system config with these settings, to run it with python -m oems run">Export config</button></div>
+</div></div>
+<dialog id="proj-dialog">
+  <div class="dlg-head"><b id="proj-title">Saved cases</b>
+    <button id="proj-close" class="small">✕</button></div>
+  <div id="proj-list"></div>
+</dialog>
+<dialog id="start-dialog">
+  <div class="start-head"><img src="/static/logo.svg" alt="" class="logo"><b>Microgrid Sizing Tool</b>
+    <button type="button" id="start-close" class="pane-close" title="Close: start with an empty canvas">✕</button></div>
+  <div class="start-cols">
+    <form id="start-new" class="start-new">
+      <h3>New project</h3>
+      <input id="start-name" placeholder="Project name" required autocomplete="off">
+      <button type="submit" class="primary">Create project</button>
+      <p class="hint">New here? <a href="#" id="start-tutorial">Follow the tutorial</a>: it builds a small site step by step.</p>
+    </form>
+    <div class="start-open">
+      <h3>Open a project</h3>
+      <div id="start-list"></div>
+    </div>
+  </div>
+</dialog>
+<dialog id="login-dialog">
+  <form id="login-form">
+    <div class="dlg-head"><b>Log in to see your saved cases</b>
+      <button type="button" class="small" onclick="this.closest('dialog').close()">✕</button></div>
+    <div class="login-body">
+      <label>User name <input id="login-user" autocomplete="username" required></label>
+      <label>Password <input id="login-pw" type="password" autocomplete="current-password" required></label>
+      <div id="login-msg" class="err-text"></div>
+      <div class="login-acts"><button type="button" id="login-register">Create account</button>
+        <button type="submit" class="primary" id="login-submit">Log in</button></div>
+    </div>
+  </form>
+</dialog>
 <div id="toast"></div>
 <script src="/static/blocks.js"></script>
 <script src="/static/panel.js"></script>
 <script src="/static/results.js"></script>
+<script src="/static/inspect.js"></script>
 <script src="/static/wiring.js"></script>
 <script src="/static/tutorial.js"></script>
+<script src="/static/simulations.js"></script>
+<script src="/static/runsettings.js"></script>
+<script src="/static/projects.js"></script>
+<script src="/static/layout.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

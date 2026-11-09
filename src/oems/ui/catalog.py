@@ -21,18 +21,20 @@ ENERGY_CONNECTORS = {
     "Converter": {},
 }
 
-#: Bidirectional components get ONE energy connector in the UI that wires all listed ports to the same bus:
-#: an output (to a bus ``supply``) or an input (from a bus ``withdraw``).
-LINKS = {"GridConnection": {"connector": "link", "direction": "out", "ports": ["import", "export"],
-                            "label": "⇄ import / export"},
-         "Storage": {"connector": "link", "direction": "in", "ports": ["charge", "discharge"],
-                     "label": "⇄ charge / discharge"}}
-
-#: Partner ports that must connect to the same bus (auto-wired by the UI for projects that wire them separately).
-PARTNERS = {"GridConnection": {"import": "export", "export": "import"},
-            "Storage": {"charge": "discharge", "discharge": "charge"}}
+#: Energy ports have no direction in the UI: each is one connector wired to a bus ``port`` and the direction above
+#: decides whether it is an inflow or an outflow. Bidirectional components get ONE connector that wires all listed
+#: ports to the same bus.
+LINKS = {"GridConnection": {"connector": "link", "ports": ["import", "export"], "label": "⇄ import / export"},
+         "Storage": {"connector": "link", "ports": ["charge", "discharge"], "label": "⇄ charge / discharge"}}
 
 HIDDEN_FIELDS = {"name", "bus", "heat_bus", "cold_bus", "inputs", "outputs", "reference", "capacity_port", "bounds"}
+
+#: Fields of the components' "Investment" group: kept in the node's ``sizing`` (the panel's variable size).
+SIZING_FIELDS = {name: [f.name for f in dataclasses.fields(cls)
+                        if (f.metadata.get(SPEC_KEY) and f.metadata[SPEC_KEY].group == "Investment")]
+                 for name, cls in REGISTRY.items()}
+SIZING_FIELDS = {k: v for k, v in SIZING_FIELDS.items() if v}
+HIDDEN_FIELDS |= {f for fields in SIZING_FIELDS.values() for f in fields}
 
 PRESETS = [
     {"id": "heat_pump", "label": "Heat pump", "type": "Converter", "icon": "hp",
@@ -90,9 +92,11 @@ def catalog() -> dict:
             "doc": (cls.__doc__ or "").strip().split("\n\n")[0],
             "fields": fields, "energy": energy, "dynamic": name == "Converter",
             "data_connectors": [f["name"] for f in fields if f["connector"]],
-            "partners": PARTNERS.get(name, {}), "link": LINKS.get(name),
+            "link": LINKS.get(name),
         })
     tariffs = [{"type": n, "fields": _fields(c)} for n, c in TARIFF_REGISTRY.items()]
-    return {"components": comps, "tariffs": tariffs, "presets": PRESETS,
+    sizing = {name: [spec_to_dict(f.name, f.metadata[SPEC_KEY], f.default) for f in dataclasses.fields(REGISTRY[name])
+                     if f.name in fields] for name, fields in SIZING_FIELDS.items()}
+    return {"components": comps, "tariffs": tariffs, "presets": PRESETS, "sizing": sizing,
             "carrier_kinds": ["electricity", "heat", "cold", "fuel", "other"],
             "resolutions": ["15min", "30min", "1h"]}

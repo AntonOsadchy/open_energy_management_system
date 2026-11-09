@@ -17,6 +17,8 @@ class CostCategory(StrEnum):
     FLEXIBILITY = "FLEXIBILITY"
     EMISSIONS = "EMISSIONS"
     FIXED = "FIXED"
+    INVESTMENT = "INVESTMENT"   # CAPEX of optimised sizes (lifetime runs, see oems.sizing)
+    FIXED_OM = "FIXED_OM"       # yearly OPEX of optimised sizes
     TIEBREAK = "TIEBREAK"
     SLACK = "SLACK"
 

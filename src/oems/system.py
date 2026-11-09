@@ -11,6 +11,8 @@ from .carrier import Bus, Carrier
 from .components.base import Component
 from .components.consumer import Demand
 from .components.grid import GridConnection
+from .components.storage import Storage
+from .components.tariffs import EnergyCredit
 from .emissions import EmissionPolicy
 from .exceptions import InfeasibleModelError, OEMSError, SolverError, UnboundedModelError, ValidationError
 from .model import build_model
@@ -176,6 +178,15 @@ class EnergySystem:
                     cap = None
                     break
                 cap = cap + hi
+            # storage that can never sell: nothing else withdraws from the bus and grid exports earn nothing
+            stores = [c for c, p in d[Direction.IN] if isinstance(c, Storage)]
+            others = [c for c, p in d[Direction.IN] if not isinstance(c, (Storage, GridConnection))]
+            grids = [c for c, p in d[Direction.IN] if isinstance(c, GridConnection)]
+            if stores and not others and not any(
+                    any(isinstance(t, EnergyCredit) for t in g.r.all_tariffs) for g in grids):
+                rep.warnings.append(
+                    f"bus {b!r}: {', '.join(c.name for c in stores)} has nothing to discharge into - no consumer on "
+                    "the bus and grid exports earn nothing; wire an export_price (and allow export) or add a demand")
             if cap is not None and np.any(demand > cap + 1e-9) and not bus.allow_slack:
                 k = int(np.sum(demand > cap + 1e-9))
                 rep.warnings.append(f"bus {b!r}: fixed demand exceeds total supply capacity in {k} steps "
@@ -217,6 +228,10 @@ class EnergySystem:
 
         grid = grid or self.grid
         m, meta, rep = self.build(grid, tie_break=tie_break, slack_all=slack_all)
+        if grid.horizon is not None and "solver" not in (options or {}):
+            # a lifetime horizon couples every step through the size variables: interior point (with crossover, so
+            # duals stay exact) is several times faster than simplex there (15 hourly years: simplex ~40 min)
+            options = {**(options or {}), "solver": "ipm"}
         info = solve_model(m, time_limit=time_limit, threads=threads, options=options)
         if info.status == SolveStatus.INFEASIBLE:
             report = None
@@ -236,7 +251,7 @@ class EnergySystem:
             raise UnboundedModelError(
                 "the model is unbounded - typical causes: an export credit above the import cost without "
                 "max_export, a negative marginal cost without a production limit, or a sink with negative cost "
-                "and no p_max")
+                "and no p_max, or an optimised size without a maximum that pays off without limit")
         if not info.has_solution:
             raise SolverError(f"solver finished without a solution ({info.message})")
         return Results(self, m, meta, info, rep)

@@ -35,5 +35,9 @@ class InfeasibleModelError(OEMSError):
         super().__init__(message)
 
 
+class RunCancelled(OEMSError):
+    """Raised when a run is stopped by the user (see ``oems.ui.runs.RunManager.cancel``)."""
+
+
 class UnboundedModelError(OEMSError):
     """Raised when the model is unbounded (e.g. a profitable arbitrage loop without limits)."""
