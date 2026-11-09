@@ -174,7 +174,7 @@ const Panel = {
   bind(id) {
     const ed = Blocks.editor;
     const node = () => ed.getNodeFromId(id);
-    const save = (d) => ed.updateNodeDataFromId(id, d);
+    const save = (d) => { ed.updateNodeDataFromId(id, d); App.dirty(); };   // the model changed
     const el = this.el;
     el.querySelectorAll("[data-k]").forEach(inp => inp.addEventListener("change", () => {
       const d = node().data;
@@ -206,12 +206,12 @@ const Panel = {
     el.querySelectorAll("[data-size-mode]").forEach(r => r.addEventListener("change", () => {
       const d = node().data;
       (d.sizing ||= {}).optimise = r.dataset.sizeMode === "variable";
-      save(d); App.dirty(); this.show(id);
+      save(d); this.show(id);
     }));
     el.querySelectorAll("[data-sz]").forEach(inp => inp.addEventListener("change", () => {
       const d = node().data;
       d.sizing[inp.dataset.sz] = inp.value === "" ? null : parseFloat(inp.value);
-      save(d); App.dirty(); this.show(id);
+      save(d); this.show(id);
     }));
     el.querySelectorAll("[data-p]").forEach(inp => inp.addEventListener("change", () => {
       const d = node().data;
@@ -687,3 +687,54 @@ function wiredParams(id) {
   }
   return out;
 }
+
+/* Changing a block's properties changes the model, so the results on show no longer match it. The first such edit
+   while results are shown asks first: save the change as a new variant (the open one keeps its results), change
+   this variant (its results are cleared) or cancel (the field goes back). */
+const EditGuard = {
+  pass: false,        // re-sending the edit the user agreed to
+  before: null,       // the run settings before the edit (to put them back on cancel)
+  CLICKS: "[data-add], [data-del], #tariff-add, [data-tdel], [data-pmadd], [data-pmdel], [data-act=fill], [data-act=scale], [data-act=paste]",
+
+  bind(el) {
+    const remember = () => { if (Results.summary) this.before = App.settings(); };
+    el.addEventListener("focusin", remember, true);
+    el.addEventListener("pointerdown", remember, true);
+    el.addEventListener("change", e => this.hold(e, e.target.matches("input, select, textarea")), true);
+    el.addEventListener("click", e => this.hold(e, e.target.closest(this.CLICKS)), true);
+  },
+
+  /* stop an edit (before the field's own handler sees it) and ask */
+  hold(e, edit) {
+    if (this.pass || !edit || !Results.summary || !Panel.nodeId || Tutorial.isOpen()) return;   // the tour edits on purpose
+    e.stopPropagation(); e.preventDefault();
+    const target = e.type === "click" ? e.target.closest(this.CLICKS) : e.target;
+    this.ask(e.type, target).catch(err => toast(err.message, true));
+  },
+
+  async ask(type, target) {
+    const choice = await this.dialog();
+    const apply = () => {
+      this.pass = true;
+      try { type === "click" ? target.click() : target.dispatchEvent(new Event("change", { bubbles: true })); }
+      finally { this.pass = false; }
+    };
+    if (choice === "edit") return apply();
+    if (choice === "variant" && await ProjectTree.branch(apply)) return;
+    if (type === "change") {      // cancelled: the field (and the run settings) as they were
+      if (this.before) App.applySettings(this.before);
+      Panel.show(Panel.nodeId);
+    }
+  },
+
+  dialog() {
+    const dlg = document.getElementById("edit-dialog");
+    document.getElementById("edit-variant-name").textContent = App.settings().name || "this project";
+    return new Promise(resolve => {
+      const done = v => { dlg.close(); resolve(v); };
+      dlg.querySelectorAll("[data-choice]").forEach(b => (b.onclick = () => done(b.dataset.choice)));
+      dlg.oncancel = e => { e.preventDefault(); done("cancel"); };
+      dlg.showModal();
+    });
+  },
+};

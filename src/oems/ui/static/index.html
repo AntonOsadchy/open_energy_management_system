@@ -35,6 +35,7 @@
   <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></symbol>
   <symbol id="i-soh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M6 7c4 1 7 3 9 7l4 4"/></symbol>
   <symbol id="i-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 4h14v10l-6 6H5z"/><path d="M13 20v-6h6M8 9h8M8 12h5"/></symbol>
+  <symbol id="i-compare" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="7" height="14" rx="1.5"/><rect x="14" y="5" width="7" height="14" rx="1.5"/><path d="M12 3v18" stroke-dasharray="2 2"/></symbol>
   <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
   <symbol id="i-blocks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></symbol>
   <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l3-7 4 14 3-7h7"/></symbol>
@@ -85,7 +86,8 @@
         <h3 class="pt-head"><span id="pt-title">Project</span> <span class="pt-acts">
           <button id="btn-save" class="icon-btn" title="Save project (⌘S / Ctrl+S)"><svg><use href="#i-save"/></svg></button>
           <button id="pt-variant" class="icon-btn" title="Save as variant"><svg><use href="#i-branch"/></svg></button>
-          <button id="pt-blank" class="icon-btn" title="New empty canvas in this project (saved as a variant)"><svg><use href="#i-plus"/></svg></button></span></h3>
+          <button id="pt-blank" class="icon-btn" title="New empty canvas in this project (saved as a variant)"><svg><use href="#i-plus"/></svg></button>
+          <button id="pt-compare" class="icon-btn" title="Compare variants"><svg><use href="#i-compare"/></svg></button></span></h3>
         <div id="proj-tree"></div>
       </div>
       <div class="pal-panel" data-panel="inputs">
@@ -200,6 +202,45 @@
     <button id="proj-close" class="small">✕</button></div>
   <div id="proj-list"></div>
 </dialog>
+<dialog id="edit-dialog" class="ask">
+  <div class="dlg-head"><b>Change the model?</b></div>
+  <div class="ask-body"><p>The results shown are for <b id="edit-variant-name"></b> as it was run. Changing its properties
+    clears them (run again to get new ones).</p>
+    <button data-choice="variant" class="primary">Save as a new variant with this change</button>
+    <span class="hint">the open variant keeps its results</span>
+    <button data-choice="edit">Change this variant</button>
+    <span class="hint">its results are cleared</span>
+    <button data-choice="cancel">Cancel</button></div>
+</dialog>
+<dialog id="cmp-leave" class="ask">
+  <div class="dlg-head"><b>Save the changes?</b></div>
+  <div class="ask-body"><p>These variants were changed in the comparison:</p><ul id="cmp-leave-list"></ul>
+    <button data-choice="save" class="primary">Save all</button>
+    <button data-choice="discard">Discard the changes</button>
+    <button data-choice="stay">Keep comparing</button></div>
+</dialog>
+<dialog id="cmp-dialog">
+  <div class="dlg-head"><b>Compare variants</b>
+    <span class="cmp-pick"><label>A <select id="cmp-a"></select></label>
+      <button id="cmp-swap" class="small" title="Swap A and B">⇄</button>
+      <label>B <select id="cmp-b"></select></label></span>
+    <span id="cmp-summary"></span>
+    <span class="cmp-tools" title="Drag a canvas to move it, scroll to zoom">
+      <label><input type="checkbox" id="cmp-link"> move together</label>
+      <button class="small" data-zoom="out" title="Zoom out">−</button><button class="small" data-zoom="in" title="Zoom in">+</button>
+      <button class="small" id="cmp-fit" title="Fit both models">Fit</button></span>
+    <button id="cmp-close" class="small">✕</button></div>
+  <div class="cmp-main">
+    <div class="cmp-left">
+      <div class="cmp-body">
+        <div class="cmp-canvas" id="cmp-canvas-a"></div>
+        <div class="cmp-canvas" id="cmp-canvas-b"></div>
+      </div>
+      <div id="cmp-detail"></div>
+    </div>
+    <div id="cmp-props"><div id="cmp-props-head"></div></div>
+  </div>
+</dialog>
 <dialog id="start-dialog">
   <div class="start-head"><img src="/static/logo.svg" alt="" class="logo"><b>Microgrid Sizing Tool</b>
     <button type="button" id="start-close" class="pane-close" title="Close: start with an empty canvas">✕</button></div>
@@ -239,6 +280,7 @@
 <script src="/static/simulations.js"></script>
 <script src="/static/runsettings.js"></script>
 <script src="/static/projects.js"></script>
+<script src="/static/compare.js"></script>
 <script src="/static/layout.js"></script>
 <script src="/static/app.js"></script>
 </body>

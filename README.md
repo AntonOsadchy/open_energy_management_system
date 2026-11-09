@@ -246,6 +246,10 @@ off each step as you do it, and has a **Do it for me** button on every step.
 * storage blocks have a **Cycling** section: cycle cost and an optional cycle limit (*Max cycles* per day / week /
   month / year, a cycle = (energy stored + energy removed) / 2 / capacity, i.e. after charge/discharge losses);
   results report the cycles counted the same way;
+* any change of the model (a property, a block, a wire; not a note) marks the project unsaved and clears the results
+  on show, as they no longer match it. Changing a property while results are shown asks first: **Save as a new
+  variant with this change** (the open variant keeps its results), **Change this variant** (its results are cleared)
+  or **Cancel** (the field goes back);
 * edit parameters, tariffs, flow costs and emission factors in the properties panel; the CO₂ cap, period and time
   zone are in the ⚙️ Run settings block;
 * **Run** marks blocks with errors (and stops), otherwise solves in the background, then shows MWh on every wire,
@@ -269,6 +273,17 @@ off each step as you do it, and has a **Do it for me** button on every step.
 * **⤓ Download CSV / Excel** (in the results bar) downloads the data of the selected tab, for the year on show:
   Summary (profit, costs, KPIs) or
   Sizing (the yearly cash flows; Excel adds the sizes and the investment KPIs);
+* **Compare variants** (the compare button in the Project tab): two variants of the open project side by side,
+  read-only at the same zoom and position (the open one as it is on the canvas, unsaved edits included). Blocks are
+  matched by kind and name: changed ones are amber with the number of changed fields, blocks only in A red, only in B
+  green, the rest dimmed. Click a block for its fields with the A and B values, the changed ones highlighted first,
+  and its **Properties** next to the canvases (changed fields highlighted there too): a block is edited in the view it was
+  clicked in (outlined blue): the open variant in place, while a block of the other view opens that variant (no
+  question: the changes of each variant are kept, and compared, until you leave); the comparison follows the edits.
+  Leaving the comparison (✕ / Esc) lists the variants changed in it: **Save all**, **Discard the changes** or **Keep
+  comparing**. Drag a
+  canvas to move it and scroll (or − / +) to zoom; each on its own, or both at once with *move together* ticked, **Fit**
+  shows both models whole. Wiring and the run settings (on the ⚙️ Run settings block) are compared too;
 * **One set of results per project / variant**: when a run finishes (logged in, project named) its results are
   saved as that project's results, replacing the ones of its previous run: the canvas and settings as they were run,
   the solved config, the summary, the plot series and the result CSVs. The Project tab shows them as **Results**

@@ -30,6 +30,7 @@ const App = {
     ed.start();
     Blocks.editor = ed;
     Panel.el = document.getElementById("panel");
+    EditGuard.bind(Panel.el);
 
     ed.on("connectionCreated", info => { Rules.onCreated(info); this.dirty(); });
     ed.on("connectionRemoved", () => this.dirty());
@@ -37,7 +38,7 @@ const App = {
     ed.on("nodeUnselected", () => Panel.clear());
     ed.on("nodeRemoved", () => { Panel.clear(); this.dirty(); this.renderDatasets(); });
     ed.on("nodeCreated", () => this.renderDatasets());
-    ed.on("nodeDataChanged", id => { if (ed.getNodeFromId(id)?.data.kind === "note") this.dirty(); });   // typing in a note
+    ed.on("nodeDataChanged", id => { if (ed.getNodeFromId(id)?.data.kind === "note") this.dirty(false); });   // typing in a note
     // pressing in a note's text (typing, selecting, its resize corner) selects the note but does not move it
     document.getElementById("canvas-wrap").addEventListener("mousedown", e => { if (e.target.closest?.(".note-node textarea")) ed.drag = false; });
     document.getElementById("drawflow").addEventListener("mouseup", e => {   // a resized note keeps its size
@@ -46,7 +47,7 @@ const App = {
       const node = ed.getNodeFromId(id), size = [t.offsetWidth, t.offsetHeight];
       if (String(node.data.size) === String(size)) return;
       ed.updateNodeDataFromId(id, { ...node.data, size });
-      this.dirty();
+      this.dirty(false);
     });
     ed.on("nodeMoved", () => Results.summary && Results.overlay());
 
@@ -84,14 +85,19 @@ const App = {
   edits: 0,             // counts model changes, so a run can tell whether the canvas changed while it solved
   savedEdits: 0,        // edits when the project was last saved or opened (more since: unsaved changes)
   variantOf: null,      // the project the open one is a variant of (see ProjectTree)
-  dirty() {
+  /* something changed (unsaved). A change of the model (``model``; not a note) clears the results on show: they no
+     longer match it. */
+  dirty(model = true) {
     if (document.getElementById("status").textContent === START_HINT) this.status("");
     this.edits++;
     this.showSaved();
+    Compare.changed();   // an open comparison follows the edits
+    if (!model) return;
     Blocks.updateInvest();
     if (!Results.summary) return;
     Results.summary = null; Results.clearOverlay(); Results.updateBar();
     this.status("Model changed - run again to update results.");
+    if (!EditGuard.pass) toast("The results were cleared: the model changed. Run again to update them.");
   },
 
   /* ok to replace the canvas: no unsaved changes, or the user agrees to drop them */
@@ -234,7 +240,7 @@ const App = {
       } else if (d.kind === "db") {
         id = Blocks.addDb(x, y);
       }
-      this.dirty();
+      this.dirty(d.kind !== "note");   // a note does not change the model
       if (id) Panel.show(id);
     });
   },

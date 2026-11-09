@@ -1242,3 +1242,162 @@ def test_start_window_new_or_open_project(page, server):
     page.click("#start-close")                                          # closing keeps what is open
     assert page.inner_text("#set-name") == "depot"
     assert not page.errors, page.errors
+
+
+def test_compare_two_variants_side_by_side(page):
+    """Compare (Project tab) shows two variants side by side: a changed block is amber with the number of changed
+    fields, a block only in one variant red (A) or green (B), the rest dimmed; clicking a block lists its fields
+    with both values, the changed ones highlighted. The open variant is compared as it is on the canvas."""
+    page.drag_and_drop(".pal-item.bus", "#drawflow", target_position={"x": 400, "y": 300})
+    page.drag_and_drop('.pal-item[data-type="GridConnection"]', "#drawflow", target_position={"x": 150, "y": 200})
+    page.evaluate("document.getElementById('set-name').textContent = 'site'")
+    page.keyboard.press("Control+s")
+    page.wait_for_selector("#login-dialog[open]")
+    page.fill("#login-user", "comparer")
+    page.fill("#login-pw", "secret1")
+    page.click("#login-register")
+    page.wait_for_function("ProjectTree.list.some(m => m.name === 'site')")
+    _tab(page, "project")
+    page.once("dialog", lambda d: d.accept("site + load"))
+    page.click("#pt-variant")
+    page.wait_for_function("ProjectTree.list.some(m => m.name === 'site + load')")
+    page.evaluate("""() => { const g = allNodes().find(n => n.data.type === 'GridConnection');
+        g.data.params.max_import = 7; Blocks.editor.updateNodeDataFromId(g.id, g.data); App.dirty(); }""")
+    _tab(page, "blocks")
+    page.drag_and_drop('.pal-item[data-type="Demand"]', "#drawflow", target_position={"x": 650, "y": 300})
+
+    _tab(page, "project")
+    page.click("#pt-compare")
+    page.wait_for_selector("#cmp-dialog[open] #cmp-canvas-b .drawflow-node")
+    assert page.input_value("#cmp-a") == "site + load" and page.input_value("#cmp-b") == "site"   # vs its parent
+    cls = lambda side, sel: page.get_attribute(f"#cmp-canvas-{side} {sel}", "class")  # noqa: E731
+    assert "cmp-changed" in cls("a", ".drawflow-node:has-text('grid')") and "cmp-changed" in cls("b", ".drawflow-node:has-text('grid')")
+    assert page.inner_text("#cmp-canvas-a .drawflow-node.cmp-changed .cmp-badge") == "1"
+    assert "cmp-only-a" in cls("a", ".drawflow-node:has-text('demand')")
+    assert page.locator("#cmp-canvas-b .drawflow-node:has-text('demand')").count() == 0
+    assert "cmp-same" in cls("a", ".drawflow-node.bus-node") or "cmp-changed" in cls("a", ".drawflow-node.bus-node")
+    assert "1 changed" in page.inner_text("#cmp-summary") and "1 only in site + load" in page.inner_text("#cmp-summary")
+    page.click("#cmp-canvas-a .drawflow-node.cmp-changed .blk-head")
+    row = page.locator("#cmp-detail tr.cmp-diff")
+    assert row.count() == 1 and "7" in row.inner_text() and "import" in row.inner_text().lower()
+    assert page.locator("#cmp-canvas-b .drawflow-node.cmp-on").count() == 1   # the same block on both sides
+    assert page.is_visible("#cmp-props #panel") and page.input_value('#cmp-props #panel [data-p="max_import"]') == "7"
+    assert page.locator('#cmp-props .cmp-field-diff [data-p="max_import"]').count() == 1   # highlighted there too
+    page.fill('#cmp-props #panel [data-p="max_import"]', "")                # edited in place: no difference left
+    page.press('#cmp-props #panel [data-p="max_import"]', "Tab")
+    page.wait_for_function("!document.querySelector('#cmp-canvas-a .drawflow-node.cmp-changed')")
+    assert page.locator("#cmp-detail tr.cmp-diff").count() == 0       # the chosen block stays shown
+
+    box = page.locator("#cmp-canvas-a").bounding_box()                 # drag to move: each canvas on its own
+    t = lambda s: page.evaluate(f"[Compare.eds.{s}.canvas_x, Compare.eds.{s}.canvas_y]")  # noqa: E731
+
+    def drag():
+        page.mouse.move(box["x"] + box["width"] - 20, box["y"] + box["height"] - 20)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] - 120, box["y"] + box["height"] - 70, steps=5)
+        page.mouse.up()
+    a0, b0 = t("a"), t("b")
+    drag()
+    assert t("a") == pytest.approx([a0[0] - 100, a0[1] - 50]) and t("b") == b0
+    page.check("#cmp-link")                                             # moved together while ticked
+    a1, b1 = t("a"), t("b")
+    drag()
+    assert t("a") == pytest.approx([a1[0] - 100, a1[1] - 50]) and t("b") == t("a")
+    z0 = page.evaluate("Compare.eds.a.zoom")
+    page.click('#cmp-dialog [data-zoom="in"]')
+    assert page.evaluate("Compare.eds.a.zoom") > z0 and page.evaluate("Compare.eds.b.zoom == Compare.eds.a.zoom")
+    page.click("#cmp-fit")                                              # a block of the other view: edit that variant
+    assert "cmp-live" in page.get_attribute("#cmp-canvas-a", "class")
+    page.click("#cmp-canvas-b .drawflow-node:has-text('grid') .blk-head")   # no question: changes kept until leaving
+    page.wait_for_function("App.settings().name === 'site'")
+    page.wait_for_selector('#cmp-props #panel [data-p="max_import"]')
+    assert "site" in page.inner_text("#cmp-props-head") and "(B," in page.inner_text("#cmp-props-head")
+    assert "cmp-live" in page.get_attribute("#cmp-canvas-b", "class")
+    assert not page.evaluate("api('/api/projects/site + load').then(p => Object.values(p.drawflow.drawflow.Home.data)"
+                             ".some(n => n.data.type === 'Demand'))")          # not saved yet...
+    assert page.locator("#cmp-canvas-a .drawflow-node:has-text('demand')").count() == 1   # ...but still compared
+    page.fill('#cmp-props #panel [data-p="max_import"]', "3")              # site edited too
+    page.press('#cmp-props #panel [data-p="max_import"]', "Tab")
+    page.click("#cmp-swap")                                             # B and A swapped: the demand is only in B
+    page.wait_for_selector("#cmp-canvas-b .drawflow-node.cmp-only-b")
+    page.click("#cmp-close")                                            # leaving: save the changes of both
+    page.wait_for_selector("#cmp-leave[open]")
+    assert page.eval_on_selector_all("#cmp-leave-list li", "ls => ls.map(l => l.textContent)") == ["site", "site + load"]
+    page.click('#cmp-leave [data-choice="stay"]')
+    assert page.is_visible("#cmp-dialog")
+    page.click("#cmp-close")
+    page.click('#cmp-leave [data-choice="save"]')
+    page.wait_for_selector("#side #panel", state="attached")            # the Properties panel is back
+    assert page.evaluate("api('/api/projects/site + load').then(p => Object.values(p.drawflow.drawflow.Home.data)"
+                         ".some(n => n.data.type === 'Demand'))")
+    assert page.evaluate("api('/api/projects/site').then(p => Object.values(p.drawflow.drawflow.Home.data)"
+                         ".find(n => n.data.type === 'GridConnection').data.params.max_import === 3)")
+    assert page.inner_text("#set-name") == "site" and page.is_hidden("#save-dot")
+    assert not page.errors, page.errors
+
+
+def test_editing_properties_after_a_run_asks_first(page):
+    """Every change of a block's properties marks the project unsaved and clears the results (they no longer match
+    the model); with results on show it asks first: Cancel puts the field back and keeps the results, 'Save as a
+    new variant' saves the change as a variant (the open project keeps its results), 'Change this variant' clears
+    them. A note is not the model: typing in one keeps the results."""
+    page.drag_and_drop(".pal-item.bus", "#drawflow", target_position={"x": 500, "y": 300})
+    page.drag_and_drop('.pal-item[data-type="GridConnection"]', "#drawflow", target_position={"x": 260, "y": 200})
+    page.drag_and_drop('.pal-item[data-type="Demand"]', "#drawflow", target_position={"x": 760, "y": 300})
+    page.evaluate("""() => {
+        const id = k => String(allNodes().find(n => k(n.data)).id);
+        const bus = id(d => d.kind === "bus"), grid = id(d => d.type === "GridConnection"), dem = id(d => d.type === "Demand");
+        connectByName([grid, "link"], [bus, "port"]);
+        connectByName([dem, "in"], [bus, "port"]);
+        const g = Blocks.editor.getNodeFromId(grid); g.data.params.import_price = 50; Blocks.editor.updateNodeDataFromId(grid, g.data);
+        const n = Blocks.editor.getNodeFromId(dem); n.data.params.profile = 0.5; Blocks.editor.updateNodeDataFromId(dem, n.data);
+    }""")
+    _set(page, "#set-days", "1")
+    page.evaluate("document.getElementById('set-name').textContent = 'base'")
+    page.keyboard.press("Control+s")
+    page.wait_for_selector("#login-dialog[open]")
+    page.fill("#login-user", "editor")
+    page.fill("#login-pw", "secret1")
+    page.click("#login-register")
+    page.wait_for_function("ProjectTree.list.some(m => m.name === 'base')")
+    _start_run(page)
+    page.wait_for_function("Results.summary !== null && Results.saved !== null", timeout=60000)
+    page.drag_and_drop(".pal-item.note", "#drawflow", target_position={"x": 300, "y": 450})
+    assert page.evaluate("Results.summary !== null")                    # a note does not clear them
+    dem = page.evaluate("String(allNodes().find(n => n.data.type === 'Demand').id)")
+    page.evaluate(f"Panel.show('{dem}')")
+    field = '#panel [data-p="profile"]'
+
+    page.fill(field, "0.8")
+    page.press(field, "Tab")
+    page.wait_for_selector("#edit-dialog[open]")
+    page.click('#edit-dialog [data-choice="cancel"]')
+    assert page.input_value(field) == "0.5" and page.evaluate("Results.summary !== null")
+    assert page.evaluate(f"Blocks.editor.getNodeFromId('{dem}').data.params.profile") == 0.5
+
+    page.fill(field, "0.8")
+    page.once("dialog", lambda d: d.accept("base - more load"))
+    page.press(field, "Tab")
+    page.wait_for_selector("#edit-dialog[open]")
+    page.click('#edit-dialog [data-choice="variant"]')
+    page.wait_for_function("ProjectTree.list.some(m => m.name === 'base - more load')")
+    assert page.inner_text("#set-name") == "base - more load" and page.evaluate("Results.summary") is None
+    assert page.evaluate("api('/api/projects/base').then(p => !!p.results && Object.values(p.drawflow.drawflow.Home.data)"
+                         ".find(n => n.data.type === 'Demand').data.params.profile === 0.5)")
+    assert page.evaluate("api('/api/projects/base - more load').then(p => Object.values(p.drawflow.drawflow.Home.data)"
+                         ".find(n => n.data.type === 'Demand').data.params.profile === 0.8)")
+
+    _start_run(page)                                                    # "Change this variant": results cleared
+    page.wait_for_function("Results.summary !== null", timeout=60000)
+    page.evaluate(f"Panel.show('{dem}')")
+    page.fill(field, "0.9")
+    page.press(field, "Tab")
+    page.wait_for_selector("#edit-dialog[open]")
+    page.click('#edit-dialog [data-choice="edit"]')
+    page.wait_for_function("Results.summary === null")
+    assert page.evaluate(f"Blocks.editor.getNodeFromId('{dem}').data.params.profile") == 0.9
+    assert page.inner_text("#save-dot") == "Unsaved changes"
+    page.fill(field, "1")                                               # no results: no question, still unsaved
+    page.press(field, "Tab")
+    assert page.is_hidden("#edit-dialog") and page.evaluate(f"Blocks.editor.getNodeFromId('{dem}').data.params.profile") == 1
+    assert not page.errors, page.errors

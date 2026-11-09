@@ -455,3 +455,60 @@ input.invalid { border-color: var(--err); background: #fff5f5; }
 .pt-tog { width: 12px; flex-shrink: 0; color: var(--muted); font-size: 10px; text-align: center; }
 .pt-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pt-n { color: var(--muted); font-size: 10.5px; font-weight: 400; }
+
+/* compare variants: two read-only canvases side by side, differences coloured */
+#cmp-dialog { width: 96vw; height: 92vh; max-width: none; max-height: none; padding: 0; border: 1px solid var(--line); border-radius: 10px;
+  display: none; flex-direction: column; }
+#cmp-dialog[open] { display: flex; }
+#cmp-dialog::backdrop { background: rgba(17,24,39,.35); }
+#cmp-dialog .dlg-head { gap: 12px; justify-content: flex-start; }
+#cmp-dialog .dlg-head #cmp-close { margin-left: auto; }
+.cmp-pick { display: flex; align-items: center; gap: 6px; }
+.cmp-pick label { display: flex; align-items: center; gap: 4px; font-weight: 600; }
+#cmp-summary { display: flex; gap: 6px; flex-wrap: wrap; }
+.cmp-main { flex: 1; display: flex; min-height: 0; }
+.cmp-left { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.cmp-body { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+#cmp-props { width: 330px; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--panel); }
+#cmp-props-head { padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.cmp-tools { display: flex; align-items: center; gap: 4px; margin-left: 12px; font-size: 12px; color: var(--muted); }
+.cmp-tools label { display: flex; align-items: center; gap: 4px; margin-right: 6px; }
+.cmp-canvas { cursor: grab; }
+.cmp-canvas.panning { cursor: grabbing; }
+.cmp-canvas { position: relative; overflow: hidden; background: var(--bg); background-image: radial-gradient(#cfd4dc 1px, transparent 1px);
+  background-size: 18px 18px; }
+.cmp-canvas + .cmp-canvas { border-left: 2px solid var(--line); }
+.cmp-canvas .drawflow-node { cursor: pointer; }
+.cmp-canvas .drawflow-node.cmp-same { opacity: .55; }
+.cmp-canvas .drawflow-node.cmp-changed { box-shadow: 0 0 0 3px #f59e0b; border-color: #f59e0b; }
+.cmp-canvas .drawflow-node.cmp-only-a { box-shadow: 0 0 0 3px #ef4444; border-color: #ef4444; }
+.cmp-canvas .drawflow-node.cmp-only-b { box-shadow: 0 0 0 3px #22c55e; border-color: #22c55e; }
+.cmp-canvas .drawflow-node.cmp-on { outline: 3px solid var(--accent); outline-offset: 3px; }
+.cmp-badge { position: absolute; top: -9px; right: -9px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: #f59e0b; color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.cmp-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
+.cmp-chip.cmp-changed { background: #fef3c7; color: #92400e; }
+.cmp-chip.cmp-only-a { background: #fee2e2; color: #991b1b; }
+.cmp-chip.cmp-only-b { background: #dcfce7; color: #166534; }
+.cmp-chip.cmp-same { background: var(--sunk); color: var(--muted); }
+#cmp-detail { height: 32%; overflow: auto; border-top: 1px solid var(--line); padding: 8px 14px; background: var(--panel); }
+#cmp-detail h4 { margin: 0 0 6px; }
+.cmp-list { margin: 4px 0; padding-left: 18px; columns: 3; }
+.cmp-list a.cmp-changed { color: #b45309; } .cmp-list a.cmp-only-a { color: #b91c1c; } .cmp-list a.cmp-only-b { color: #15803d; }
+.cmp-table { width: 100%; }
+.cmp-table td { vertical-align: top; }
+.cmp-table .cmp-val { white-space: pre-wrap; word-break: break-word; }
+.cmp-table tr.cmp-diff td { background: #fef3c7; }
+.cmp-table tr.cmp-diff td:first-child { box-shadow: inset 3px 0 #f59e0b; font-weight: 600; }
+#cmp-props .cmp-field-diff { background: #fef3c7; box-shadow: -4px 0 0 #fef3c7, 4px 0 0 #fef3c7, inset 3px 0 #f59e0b; border-radius: 3px; }
+#cmp-props #panel { flex: 1; overflow-y: auto; }
+
+/* asked before an edit clears the results */
+dialog.ask { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: 420px; max-width: 94vw; }
+dialog.ask::backdrop { background: rgba(17,24,39,.35); }
+dialog.ask .ask-body { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 4px; }
+dialog.ask .ask-body p { margin: 0 0 8px; }
+dialog.ask .ask-body button { text-align: left; padding: 7px 12px; }
+dialog.ask .ask-body .hint { margin: 0 0 6px 2px; }
+.cmp-canvas.cmp-live { box-shadow: inset 0 0 0 2px var(--accent); }
+dialog.ask ul { margin: 0 0 10px; padding-left: 20px; }

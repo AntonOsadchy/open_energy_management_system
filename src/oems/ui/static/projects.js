@@ -264,22 +264,26 @@ const ProjectTree = {
       latest: Math.max(...fam[m.name].map(x => x.saved)) })).sort((a, b) => b.latest - a.latest);
   },
 
-  /* save the canvas as a new variant of the open project (saving that project first if it never was) */
-  async branch() {
+  /* save the canvas as a new variant of the open project (saving that project first if it never was); ``change``
+     is applied to the canvas once the open project is saved and the variant named (an edit that makes the variant).
+     Returns whether the variant was saved. */
+  async branch(change = null) {
     await Account.ensure();
     await this.refresh();
     const names = new Set(this.list.map(m => m.name));
     if (!names.has(App.settings().name)) await App.save();
     const base = App.settings().name;
-    if (!base) return;   // naming the new project was cancelled
+    if (!base) return false;   // naming the new project was cancelled
     let i = 1;
     while (names.has(`${base} - variant ${i}`)) i++;
     const name = prompt(`Name of the new variant of '${base}':`, `${base} - variant ${i}`)?.trim();
-    if (!name) return;
-    if (name === base || names.has(name)) return toast(`A project named '${name}' already exists`, true);
+    if (!name) return false;
+    if (name === base || names.has(name)) { toast(`A project named '${name}' already exists`, true); return false; }
+    change?.();
     document.getElementById("set-name").textContent = name;
     App.variantOf = base;
     await App.save();
+    return true;
   },
 
   /* start an empty canvas as a new variant in the open project's family, under the project they all stem from,
