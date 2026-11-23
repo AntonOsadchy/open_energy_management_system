@@ -15,7 +15,9 @@ cost of the site without the new assets is a constant. To report the investment'
 *reference* case is solved as well: the same horizon with every optimised size pinned to its minimum
 (:func:`reference_config`), or a *baseline* system of its own (``lifetime.reference``: a config, e.g. the site as it
 is today; solved on the same horizon). Savings per year = reference operating cost - operating cost with the optimal
-sizes.
+sizes. The reference case does not change the optimal sizes, only what they are compared with: ``lifetime.compare:
+false`` skips it (one solve; e.g. when the site cannot run without the investment) and reports the sizes and the
+present value of the site's lifetime cost instead of NPV, IRR and payback (no hurdles then).
 
 Investment hurdles (``lifetime.hurdles``: a minimum IRR and/or a maximum payback) are linear constraints on the
 same cash flows: IRR >= h is NPV at rate h >= 0, payback <= P is the cumulative cash flow at P >= 0. Both are a
@@ -52,6 +54,9 @@ DAYS_PER_YEAR = 365.0
 
 #: Cost categories of the investment itself (not operating costs of the site).
 INVESTMENT_CATEGORIES = (CostCategory.INVESTMENT.value, CostCategory.FIXED_OM.value)
+
+#: Energy per year reported in the cash-flow table for each optimised component: port -> label.
+REPORTED_ENERGY = {"out": "production", "discharge": "discharged", "import": "import", "export": "export"}
 
 
 class Horizon:
@@ -157,6 +162,12 @@ def optimised(cfg: dict) -> list[dict]:
     return [c for c in cfg.get("components", []) if c.get("optimise_size")]
 
 
+def compares(cfg: dict) -> bool:
+    """Whether a lifetime optimisation is compared with a reference case (NPV, IRR, payback, savings): yes unless
+    ``lifetime.compare`` is false (sizes and the lifetime cost only, one solve)."""
+    return (cfg.get("lifetime") or {}).get("compare", True) is not False
+
+
 def without_reference(cfg: dict) -> dict:
     """``cfg`` without its baseline system (``lifetime.reference``), as the sized model is solved."""
     if "reference" not in (cfg.get("lifetime") or {}):
@@ -167,17 +178,20 @@ def without_reference(cfg: dict) -> dict:
 
 
 def reference_config(cfg: dict) -> dict:
-    """The case without the investment: the baseline system of ``lifetime.reference`` if there is one (solved on
-    ``cfg``'s horizon: its time and lifetime sections are ``cfg``'s), else ``cfg`` itself. Every optimised size of it
-    is pinned to its minimum."""
+    """The case the investment is compared with: the baseline system of ``lifetime.reference`` if there is one
+    (solved on ``cfg``'s horizon: its time and lifetime sections are ``cfg``'s), else ``cfg`` itself with every
+    optimised size pinned to its minimum. A baseline's own optimised sizes stay optimised: it is an investment option
+    of its own (e.g. only expanding the grid), compared at its optimum."""
     life = cfg["lifetime"]
     if life.get("reference") is not None:
         ref = copy.deepcopy(life["reference"])
         ref["time"] = copy.deepcopy(cfg["time"])
         ref["lifetime"] = copy.deepcopy(without_reference(cfg)["lifetime"])
-    else:
-        ref = copy.deepcopy(cfg)
-    ref["lifetime"].pop("self_sufficiency", None)      # a target of the investment, not of the site without it
+        ref["lifetime"].pop("self_sufficiency", None)      # a target of the investment, not of the baseline
+        ref["lifetime"].pop("reference_name", None)
+        return ref
+    ref = copy.deepcopy(cfg)
+    ref["lifetime"].pop("self_sufficiency", None)
     ref["lifetime"].pop("reference_name", None)
     for c in optimised(ref):
         if c.get("type") == "Producer":
@@ -185,6 +199,8 @@ def reference_config(cfg: dict) -> dict:
         elif c.get("type") == "Storage":
             c["e_size_max"] = c.get("e_size_min") or 0.0
             c["p_size_max"] = c.get("p_size_min") or 0.0
+        elif c.get("type") == "GridConnection":      # the existing connection, not expanded
+            c["expansion_max_import"] = c["expansion_max_export"] = 0.0
     return ref
 
 
@@ -217,6 +233,8 @@ def self_sufficiency_ports(system) -> tuple[list[tuple[str, str]], list[tuple[st
 
 def self_sufficiency(res) -> float | None:
     """Share of the electricity demand not bought from the grid in a solved run (None without demand)."""
+    if isinstance(res, ReferenceSummary):
+        return res.self_sufficiency
     imports, demands = self_sufficiency_ports(res.system)
     energy = res.energy()
 
@@ -273,6 +291,11 @@ def _hurdle_scale(hz: Horizon, w: np.ndarray) -> tuple[np.ndarray, float]:
 def hurdle_value(res, w: np.ndarray) -> float:
     """The site's cost weighted by the hurdle weights ``w`` (operating cost and OPEX by year, CAPEX once) of a solved
     lifetime run: the reference case's is the bound of the sized model's (:func:`hurdle_expr`)."""
+    if isinstance(res, ReferenceSummary):
+        hz = res.hz()
+        per_t, levelised = _hurdle_scale(hz, w)
+        return (float(np.asarray(res.copy_costs) @ per_t[::hz.n_base]) + res.capex
+                + levelised * (res.opex + res.charges))
     hz = res.grid.horizon
     per_step, period = res.step_costs()
     per_t, levelised = _hurdle_scale(hz, w)
@@ -319,6 +342,9 @@ def _hurdle_name(kind: str, target: float) -> str:
 def _annual_costs(res) -> tuple[np.ndarray, float, float, float]:
     """Operating cost of the site per year (at base-period prices, undiscounted, EUR), plus the present values of
     CAPEX, OPEX and the charges per billing period (peak, fixed) of a solved lifetime run."""
+    if isinstance(res, ReferenceSummary):
+        hz = res.hz()
+        return (np.asarray(res.copy_costs) / hz.copy_weight)[hz.copy_of_year], res.capex, res.opex, res.charges
     hz = res.grid.horizon
     per_step, period = res.step_costs()
     cats = per_step.columns.get_level_values("category")
@@ -332,6 +358,57 @@ def _annual_costs(res) -> tuple[np.ndarray, float, float, float]:
     return annual, capex, opex, charges
 
 
+@dataclass
+class ReferenceSummary:
+    """What a lifetime optimisation needs of its solved reference case: enough for the cash flows, KPIs and hurdles,
+    so a stored one (``oems.reference_cache``) replaces solving it again.
+
+    ``copy_costs``: the operating cost per modelled copy of the base period, as weighted in the objective;
+    ``capex`` / ``opex`` / ``charges``: present values of the period costs (see ``_annual_costs``); ``sizes``: the
+    reference's own optimised sizes ``{component: {quantity: [value, unit]}}``; ``horizon``: the arguments of its
+    :class:`Horizon`; ``created``: when it was stored (None: solved in this run).
+    """
+
+    total_cost: float
+    copy_costs: list
+    capex: float
+    opex: float
+    charges: float
+    self_sufficiency: float | None
+    sizes: dict
+    horizon: dict
+    created: str | None = None
+
+    def hz(self) -> Horizon:
+        return Horizon(**self.horizon)
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if k != "created"}
+
+    @classmethod
+    def from_dict(cls, d: dict, created: str | None = None) -> ReferenceSummary:
+        out = cls(**{k: d[k] for k in ("total_cost", "copy_costs", "capex", "opex", "charges", "self_sufficiency",
+                                        "sizes", "horizon")}, created=created)
+        out.hz()        # a record that does not fit raises here
+        return out
+
+
+def summarise_reference(res) -> ReferenceSummary:
+    """The :class:`ReferenceSummary` of a solved reference case."""
+    hz = res.grid.horizon
+    per_step, _ = res.step_costs()
+    cats = per_step.columns.get_level_values("category")
+    keep = ~cats.isin([c.value for c in ARTIFICIAL]) & ~cats.isin(INVESTMENT_CATEGORIES)
+    copy_costs = np.bincount(hz.year_of, weights=per_step.loc[:, keep].sum(axis=1).to_numpy(), minlength=hz.copies)
+    _, capex, opex, charges = _annual_costs(res)
+    return ReferenceSummary(
+        total_cost=float(res.total_cost), copy_costs=[float(v) for v in copy_costs], capex=capex, opex=opex,
+        charges=charges, self_sufficiency=self_sufficiency(res),
+        sizes={c: {q: [float(v), u] for q, (v, u) in qs.items()} for c, qs in res.sizes.items()},
+        horizon={"years": hz.years, "discount_rate": hz.discount_rate, "n_base": hz.n_base,
+                 "step_hours": hz.step_hours, "weighted": hz.weighted, "inflation": hz.inflation})
+
+
 def year_table(res, ref) -> pd.DataFrame:
     """Cash flows of the investment, one row per year (0 = the investment, 1..N operation).
 
@@ -339,34 +416,44 @@ def year_table(res, ref) -> pd.DataFrame:
     Operating cost includes the charges per billing period (peak, fixed), levelised over the years (their present
     value / annuity). Savings = reference operating cost - operating cost; net cash flow = savings - OPEX (year 0:
     - CAPEX). Both runs' CAPEX/OPEX are counted, so a non-zero minimum size cancels out.
+
+    Without a reference case (``ref`` None, see :func:`compares`) the table holds the site's own costs instead:
+    total cost = operating cost + OPEX (year 0: CAPEX), discounted; its sum is the lifetime cost (the objective).
     """
     hz = res.grid.horizon
     op, capex, opex, charges = _annual_costs(res)
-    op_ref, capex_ref, opex_ref, charges_ref = _annual_costs(ref)
     op = (op + charges / hz.annuity) * hz.escalation
-    op_ref = (op_ref + charges_ref / hz.annuity) * hz.escalation
-    opex_y = (opex - opex_ref) / hz.annuity * hz.escalation
     years = np.arange(0, hz.years + 1)
     df = np.concatenate(([1.0], hz.df))
-    savings = np.concatenate(([0.0], op_ref - op))
-    om = np.concatenate(([0.0], opex_y))
-    invest = np.concatenate(([capex - capex_ref], np.zeros(hz.years)))
-    net = savings - om - invest
-    out = pd.DataFrame({"year": years, "price_index": np.concatenate(([1.0], hz.escalation)),
-                        "discount_factor": df,
-                        "operating_cost": np.concatenate(([0.0], op)),
-                        "operating_cost_reference": np.concatenate(([0.0], op_ref)),
-                        "savings": savings, "opex": om, "capex": invest, "net_cash_flow": net,
-                        "net_cash_flow_cumulative": np.cumsum(net), "discounted": net * df,
-                        "discounted_cumulative": np.cumsum(net * df)})
+    base = {"year": years, "price_index": np.concatenate(([1.0], hz.escalation)), "discount_factor": df,
+            "operating_cost": np.concatenate(([0.0], op))}
+    if ref is None:
+        om = np.concatenate(([0.0], opex / hz.annuity * hz.escalation))
+        invest = np.concatenate(([capex], np.zeros(hz.years)))
+        total = base["operating_cost"] + om + invest
+        out = pd.DataFrame({**base, "opex": om, "capex": invest, "total_cost": total, "discounted": total * df,
+                            "discounted_cumulative": np.cumsum(total * df)})
+    else:
+        op_ref, capex_ref, opex_ref, charges_ref = _annual_costs(ref)
+        op_ref = (op_ref + charges_ref / hz.annuity) * hz.escalation
+        savings = np.concatenate(([0.0], op_ref - op))
+        om = np.concatenate(([0.0], (opex - opex_ref) / hz.annuity * hz.escalation))
+        invest = np.concatenate(([capex - capex_ref], np.zeros(hz.years)))
+        net = savings - om - invest
+        out = pd.DataFrame({**base, "operating_cost_reference": np.concatenate(([0.0], op_ref)),
+                            "savings": savings, "opex": om, "capex": invest, "net_cash_flow": net,
+                            "net_cash_flow_cumulative": np.cumsum(net), "discounted": net * df,
+                            "discounted_cumulative": np.cumsum(net * df)})
     energy = res.energy()
     for name, comp in res.system.components.items():
         if not getattr(comp, "optimise_size", False):
             continue
-        port = "out" if "out" in comp.ports() else "discharge"
-        mwh = energy.xs((name, port), level=("component", "port"), axis=1).sum(axis=1).to_numpy()
-        per_year = hz.per_year(mwh) * hz.year_scale
-        out[f"{name} {'production' if port == 'out' else 'discharged'} MWh"] = np.concatenate(([0.0], per_year))
+        for port, what in REPORTED_ENERGY.items():
+            if port not in comp.ports():
+                continue
+            mwh = energy.xs((name, port), level=("component", "port"), axis=1).sum(axis=1).to_numpy()
+            per_year = hz.per_year(mwh) * hz.year_scale
+            out[f"{name} {what} MWh"] = np.concatenate(([0.0], per_year))
     return out
 
 
@@ -410,7 +497,7 @@ def payback(cumulative, flows) -> float | None:
 @dataclass
 class SizingResults:
     results: object                                 # Results of the lifetime run with the optimal sizes
-    reference: object                               # Results with every optimised size at its minimum
+    reference: object                               # Results with every optimised size at its minimum (or None)
     table: pd.DataFrame                             # year_table
     sizes: list[dict]                               # [{component, quantity, value, unit, min, max}]
     kpis: dict = field(default_factory=dict)
@@ -426,17 +513,31 @@ def investment_kpis(table: pd.DataFrame, hz: Horizon, tol: float = 1e-9) -> dict
     noise): no IRR or payback."""
     capex = float(table["capex"].sum())
     none = abs(capex) <= tol
-    return {"npv": float(table["discounted"].sum()), "irr": None if none else irr(table["net_cash_flow"]),
+    return {"compared": True, "npv": float(table["discounted"].sum()),
+            "irr": None if none else irr(table["net_cash_flow"]),
             "payback": None if none else payback(table["net_cash_flow_cumulative"], table["net_cash_flow"]),
             "payback_discounted": None if none else payback(table["discounted_cumulative"], table["discounted"]),
             "capex": capex, "opex_per_year": float(table["opex"].iloc[1:].mean()),
             "savings_year1": float(table["savings"].iloc[1]), "savings_total": float(table["savings"].sum()),
-            "years": hz.years, "discount_rate": hz.discount_rate, "inflation": hz.inflation,
-            "year_scale": hz.year_scale,
-            "steps": hz.n, "base_days": hz.base_days}
+            **_horizon_kpis(hz)}
 
 
-def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None) -> SizingResults:
+def cost_kpis(table: pd.DataFrame, hz: Horizon) -> dict:
+    """Headline figures of a lifetime optimisation without a reference case: the present value of the site's costs
+    over the lifetime (``lifetime_cost``, the objective) and its parts; no NPV, IRR or payback (nothing to compare)."""
+    return {"compared": False, "npv": None, "irr": None, "payback": None, "payback_discounted": None,
+            "lifetime_cost": float(table["discounted"].sum()), "capex": float(table["capex"].sum()),
+            "opex_per_year": float(table["opex"].iloc[1:].mean()),
+            "operating_cost_year1": float(table["operating_cost"].iloc[1]), **_horizon_kpis(hz)}
+
+
+def _horizon_kpis(hz: Horizon) -> dict:
+    return {"years": hz.years, "discount_rate": hz.discount_rate, "inflation": hz.inflation,
+            "year_scale": hz.year_scale, "steps": hz.n, "base_days": hz.base_days}
+
+
+def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None, cache=None,
+                      base_dir=None) -> SizingResults:
     """Solve the one-shot lifetime model of ``cfg`` (``lifetime.mode == "optimise"``) and its reference case.
 
     ``solve(cfg) -> Results`` solves one config (default ``from_config`` + ``EnergySystem.solve``); ``on_stage(k, n,
@@ -445,6 +546,11 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None) 
 
     With hurdles (``lifetime.hurdles``) the reference case is solved first and the sized model gets one constraint
     per hurdle (``lifetime.hurdle_limits``: weights and bound, see :func:`hurdle_expr`); ``solve_both`` is not used.
+
+    ``cache`` (an ``oems.reference_cache.ReferenceCache``): the reference case is solved once and its summary stored;
+    a later run with the same reference (same system, data, run settings and model code; ``base_dir`` resolves
+    relative data paths) reuses it and solves the sized model only (``SizingResults.reference`` is then a
+    :class:`ReferenceSummary`).
     """
     from .config import from_config
 
@@ -455,35 +561,63 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None) 
         raise ValidationError("no component has optimise_size set: nothing to size")
     goals = hurdles(cfg)
     target = self_sufficiency_target(cfg)
-    reference, cfg = reference_config(cfg), without_reference(cfg)
+    if solve is None:
+        def solve(c):
+            es, opts = from_config(c)
+            return es.solve(time_limit=opts.get("time_limit"), tie_break=opts.get("tie_break", 0.01))
     if target is not None:
         solve, solve_both = _explain_infeasible(solve, target), _explain_infeasible(solve_both, target)
+    if not compares(cfg):       # the optimal sizes and the lifetime cost only: no reference case to solve
+        if goals:
+            raise ValidationError("investment hurdles (minimum IRR, maximum payback) need a case to compare with: "
+                                  "choose a baseline in Run settings, or remove the hurdles")
+        cfg = without_reference(cfg)
+        if on_stage:
+            on_stage(1, 1, "sizing model")
+        res = solve(cfg)
+        res.release_model()
+        return _sizing_results(cfg, res, None)
+    baseline = life.get("reference_name") or ("baseline" if life.get("reference") is not None else None)
+    reference, cfg = reference_config(cfg), without_reference(cfg)
+    what = f"baseline '{baseline}'" if baseline else "reference case (without the investment)"
+    key = cache.key(reference, base_dir) if cache is not None else None
+    stored = _stored_reference(cache, key)
+
+    def store(ref):
+        if cache is not None and key:
+            cache.put(key, summarise_reference(ref).to_dict(), baseline)
+
+    def bounded(ref, hz):       # the sized model with one constraint per hurdle, bounded by the reference case
+        limits = []
+        for kind, goal in goals:
+            w = hurdle_weights(kind, goal, hz)
+            limits.append({"name": _hurdle_name(kind, goal), "weights": w.tolist(), "limit": hurdle_value(ref, w)})
+        sized = copy.deepcopy(cfg)
+        sized["lifetime"]["hurdle_limits"] = limits
+        return sized
+
+    if stored is not None:      # solved before with the same system, data and settings: only the sized model
+        if on_stage:
+            on_stage(1, 1, f"optimal sizes ({what} reused, solved {stored.created})")
+        res = _solve_bounded(solve, bounded(stored, stored.hz())) if goals else solve(cfg)
+        res.release_model()
+        return _sizing_results(cfg, res, stored)
     if solve_both is not None and not goals:
         if on_stage:
             on_stage(1, 1, "optimal sizes and reference case in parallel")
         res, ref = solve_both(cfg, reference)
+        store(ref)
         return _sizing_results(cfg, res, ref)
-    if solve is None:
-        def plain(c):
-            es, opts = from_config(c)
-            return es.solve(time_limit=opts.get("time_limit"), tie_break=opts.get("tie_break", 0.01))
-        solve = _explain_infeasible(plain, target) if target is not None else plain
     if goals:       # the hurdles are bounded by the reference case's cash flows: it goes first
         if on_stage:
-            on_stage(1, 2, "reference case (without the investment)")
-        ref = solve(reference)
+            on_stage(1, 2, what)
+        ref = _solve_reference(solve, reference, baseline)
         ref.release_model()
         gc.collect()
-        hz = ref.grid.horizon
-        limits = []
-        for kind, target in goals:
-            w = hurdle_weights(kind, target, hz)
-            limits.append({"name": _hurdle_name(kind, target), "weights": w.tolist(), "limit": hurdle_value(ref, w)})
-        sized = copy.deepcopy(cfg)
-        sized["lifetime"]["hurdle_limits"] = limits
+        store(ref)
         if on_stage:
             on_stage(2, 2, "optimal sizes meeting the hurdles")
-        res = solve(sized)
+        res = _solve_bounded(solve, bounded(ref, ref.grid.horizon))
         res.release_model()
         return _sizing_results(cfg, res, ref)
     if on_stage:
@@ -492,10 +626,55 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None) 
     res.release_model()         # before the reference is built: two lifetime models at once may not fit in memory
     gc.collect()
     if on_stage:
-        on_stage(2, 2, "reference case (without the investment)")
-    ref = solve(reference)
+        on_stage(2, 2, what)
+    ref = _solve_reference(solve, reference, baseline)
     ref.release_model()
+    store(ref)
     return _sizing_results(cfg, res, ref)
+
+
+def _solve_bounded(solve, sized: dict):
+    """Solve the sized model with its hurdle constraints; when it is infeasible the hurdles are named: staying at
+    the minimum sizes always meets them, so the site cannot run at sizes that do (it needs the investment)."""
+    try:
+        return solve(sized)
+    except InfeasibleModelError as e:
+        names = ", ".join(h["name"] for h in sized["lifetime"]["hurdle_limits"])
+        raise InfeasibleModelError(
+            f"no sizes cover the demand and meet the investment hurdles ({names}): the site cannot run without the "
+            "investment, and against the reference case the investment does not reach them. Lower or remove the "
+            "hurdles in Run settings, or compare with another baseline", report=e.report) from e
+
+
+def _stored_reference(cache, key) -> ReferenceSummary | None:
+    """The reference case stored under ``key`` (None: not stored, or a record that cannot be read)."""
+    rec = cache.get(key) if cache is not None and key else None
+    if not rec:
+        return None
+    try:
+        return ReferenceSummary.from_dict(rec["summary"], created=rec.get("created") or "earlier")
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return None
+
+
+def _solve_reference(solve, reference: dict, baseline: str | None):
+    """Solve the reference case; an infeasible one is explained: the site cannot run without the investment, so the
+    NPV has nothing to compare with (a baseline variant, or larger minimum sizes, fix it)."""
+    try:
+        return solve(reference)
+    except InfeasibleModelError as e:
+        rep = e.report
+        where = (f" on bus {', '.join(sorted(set(rep['bus'])))}" if rep is not None and len(rep) else "")
+        if baseline:
+            what = f"the baseline '{baseline}' cannot meet the energy balance{where}"
+            fix = "make sure the baseline runs on its own with these run settings"
+        else:
+            what = (f"this model without the new assets (every optimised size at its minimum, grid connections not "
+                    f"expanded) cannot meet the energy balance{where}")
+            fix = ("choose a baseline variant in Run settings (e.g. the site as it is today), or raise the minimum "
+                   "sizes or the existing max_import so the site runs without the investment")
+        raise InfeasibleModelError(f"the reference case is infeasible: {what}. The investment is valued against "
+                                   f"it, so it must run: {fix}", report=rep) from e
 
 
 def _explain_infeasible(fn, target: float):
@@ -517,25 +696,30 @@ def _explain_infeasible(fn, target: float):
 
 
 def _sizing_results(cfg: dict, res, ref) -> SizingResults:
-    """Sizes, cash flows and KPIs of a solved lifetime optimisation and its reference case."""
+    """Sizes, cash flows and KPIs of a solved lifetime optimisation and its reference case (None: not compared)."""
     hz = res.grid.horizon
     table = year_table(res, ref)
     sizes = []
-    by_name = {c["name"]: c for c in optimised(cfg)}
     for name, quantities in res.sizes.items():
-        c = by_name.get(name, {})
+        limits = res.system.components[name].size_limits()
         for q, (value, unit) in quantities.items():
-            lo, hi = {"capacity": ("capacity_min", "capacity_max"), "energy": ("e_size_min", "e_size_max"),
-                      "power": ("p_size_min", "p_size_max")}.get(q, (None, None))
-            sizes.append({"component": name, "quantity": q, "value": value, "unit": unit,
-                          "min": c.get(lo) or 0.0, "max": c.get(hi)})
-    noise = 1e-7 * max(1.0, abs(ref.total_cost))        # EUR: below this a cash flow is solver noise
-    kpis = investment_kpis(table, hz, tol=noise)
-    kpis["npv_check"] = float(ref.total_cost - res.total_cost)
-    kpis["reference"] = (cfg.get("lifetime") or {}).get("reference_name")   # the baseline system, if one was chosen
+            lo, hi = limits.get(q, (0.0, None))
+            sizes.append({"component": name, "quantity": q, "value": value, "unit": unit, "min": lo, "max": hi})
+    noise = 1e-7 * max(1.0, abs((ref or res).total_cost))        # EUR: below this a cash flow is solver noise
+    if ref is None:
+        kpis = cost_kpis(table, hz)
+    else:
+        kpis = investment_kpis(table, hz, tol=noise)
+        kpis["npv_check"] = float(ref.total_cost - res.total_cost)
+        kpis["reference"] = (cfg.get("lifetime") or {}).get("reference_name")   # the baseline system, if chosen
+        kpis["reference_reused"] = ref.created if isinstance(ref, ReferenceSummary) else None   # not solved again
+        if kpis["reference"] and ref.sizes:     # a baseline with variable sizes: compared at its own optimum
+            kpis["reference_sizes"] = [{"component": c, "quantity": q, "value": v, "unit": u}
+                                       for c, qs in ref.sizes.items() for q, (v, u) in qs.items()]
     warnings = []
     target = self_sufficiency_target(cfg)
-    kpis["self_sufficiency"], kpis["self_sufficiency_reference"] = self_sufficiency(res), self_sufficiency(ref)
+    kpis["self_sufficiency"] = self_sufficiency(res)
+    kpis["self_sufficiency_reference"] = None if ref is None else self_sufficiency(ref)
     if target is not None:
         kpis["self_sufficiency_target"] = target
         kpis["self_sufficiency_binding"] = (kpis["self_sufficiency"] is not None

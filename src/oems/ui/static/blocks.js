@@ -169,7 +169,7 @@ const Blocks = {
   dbConnections() { return allNodes().filter(n => n.data.kind === "dbconn"); },
 
   /* Run settings block (kind "invest"): the CO₂ cap and the lifetime optimisation's discount rate and hurdles; not
-     wired, at most one per project (the sizes to optimise are set on the PV and storage blocks themselves) */
+     wired, at most one per project (the sizes to optimise are set on the PV, storage and grid blocks themselves) */
   addInvest(x, y, opts = {}) {
     // a multi-year project from before the block held the discount rate and inflation keeps its own
     const v = id => parseFloat(document.getElementById(id).value) || 0;
@@ -194,17 +194,47 @@ const Blocks = {
 
   investNode() { return allNodes().find(n => n.data.kind === "invest"); },
 
-  /* components that can be sized (PV and storages) */
+  /* components that can be sized (PV, storages and grid connections) */
   sizeable() { return allNodes().filter(n => n.data.kind === "component" && this.catalog.sizing[n.data.type]); },
 
   /* the CAPEX / OPEX fields of a component type (required when it is optimised) */
-  costFields(type) { return (this.catalog.sizing[type] || []).filter(f => f.name.startsWith("capex") || f.name === "opex"); },
+  costFields(type) { return (this.catalog.sizing[type] || []).filter(f => f.name.startsWith("capex") || f.name.startsWith("opex")); },
 
-  /* PV and storages switched to variable size: [{node, asset: its sizing, missing: [labels of empty CAPEX/OPEX]}] */
+  /* a grid connection's direction ("import" / "export") that a variable size may expand: its max expansion is not 0 */
+  gridOpen(d, dir) { const m = d.sizing?.["expansion_max_" + dir]; return [undefined, null, ""].includes(m) || Number(m) > 0; },
+
+  /* the CAPEX / OPEX fields a variable-size block needs: all of them; a grid connection's only for the directions it
+     may expand (capex_import, opex_export, ...) */
+  requiredCosts(d) {
+    return this.costFields(d.type).filter(f => d.type !== "GridConnection" || this.gridOpen(d, f.name.split("_")[1]));
+  },
+
+  /* PV, storages and grid connections switched to variable size: [{node, asset: its sizing, missing: [labels of
+     empty required fields: CAPEX / OPEX, and a grid connection's existing max_import / max_export it may expand]}] */
   optimisedAssets() {
-    return this.sizeable().filter(n => n.data.sizing?.optimise).map(n => ({
-      node: n, asset: n.data.sizing,
-      missing: this.costFields(n.data.type).filter(f => [undefined, null, ""].includes(n.data.sizing[f.name])).map(f => f.label) }));
+    const empty = v => [undefined, null, ""].includes(v);
+    return this.sizeable().filter(n => n.data.sizing?.optimise).map(n => {
+      const grid = n.data.type === "GridConnection", wired = grid ? wiredParams(n.id) : {};
+      return { node: n, asset: n.data.sizing,
+        missing: [...this.requiredCosts(n.data).filter(f => empty(n.data.sizing[f.name])).map(f => f.label),
+          ...(grid ? ["import", "export"].filter(dir => this.gridOpen(n.data, dir) && empty(n.data.params["max_" + dir])
+            && !wired["max_" + dir]).map(dir => `max_${dir} (existing, 0 if none)`) : [])] };
+    });
+  },
+
+  /* the size range of a variable-size block, e.g. "0–4 MWh"; a grid connection: per direction it may expand, the
+     existing max_import / max_export + the expansion */
+  sizeRange(node) {
+    const a = node.data.sizing || {}, t = node.data.type;
+    const r = (lo, hi, unit) => `${fmt(Number(lo || 0))}–${[undefined, null, ""].includes(hi) ? "∞" : fmt(Number(hi))} ${unit}`;
+    if (t === "Storage") return r(a.e_size_min, a.e_size_max, "MWh");
+    if (t === "GridConnection") {
+      const wired = wiredParams(node.id);
+      return ["import", "export"].filter(dir => this.gridOpen(node.data, dir)).map(dir => `${dir} ${wired["max_" + dir] ?
+        "series" : fmt(Number(node.data.params["max_" + dir] || 0))} + ${r(0, a["expansion_max_" + dir], "MW")}`).join(", ")
+        || "no expansion";
+    }
+    return r(a.capacity_min, a.capacity_max, "MW");
   },
 
   /* projects saved before the sizing moved onto the components: move the Run settings block's assets onto them */
@@ -230,10 +260,8 @@ const Blocks = {
     for (const o of this.optimisedAssets()) document.getElementById("node-" + o.node.id)?.classList.add("is-sized");
     if (!id) return;
     const d = this.editor.getNodeFromId(id).data;
-    const range = (lo, hi, unit) => `${fmt(lo || 0)}–${hi === undefined || hi === null || hi === "" ? "∞" : fmt(hi)} ${unit}`;
-    const lines = this.optimisedAssets().map(({ node, asset: a, missing }) => `<div class="${missing.length ? "inv-missing" : ""}">${
-      esc(node.data.name)}: ${node.data.type === "Storage" ? range(a.e_size_min, a.e_size_max, "MWh") : range(a.capacity_min, a.capacity_max, "MW")}${
-      missing.length ? " ⚠" : ""}</div>`);
+    const lines = this.optimisedAssets().map(({ node, missing }) => `<div class="${missing.length ? "inv-missing" : ""}">${
+      esc(node.data.name)}: ${this.sizeRange(node)}${missing.length ? " ⚠" : ""}</div>`);
     const el = document.querySelector(`#node-${id} .invest-list`);
     const cap = d.co2_cap === null || d.co2_cap === undefined || d.co2_cap === "" ? "" : `<div>CO₂ cap ${fmt(Number(d.co2_cap))} t</div>`;
     const set = v => v !== null && v !== undefined && v !== "";
@@ -251,7 +279,8 @@ const Blocks = {
       (lines.length ? `<div class="hint">discount ${fmt(Number(d.discount_rate || 0))} %${
         Number(d.inflation) ? ` · inflation ${fmt(Number(d.inflation))} %` : ""}</div>` : "") +
       (lines.length && goals ? `<div class="hint">${goals}</div>` : "") +
-      (d.baseline ? `<div class="hint">baseline: ${esc(d.baseline)}</div>` : ""));
+      (d.no_reference ? `<div class="hint">no baseline: sizes and lifetime cost</div>` :
+        d.baseline ? `<div class="hint">baseline: ${esc(d.baseline)}</div>` : ""));
   },
 
   /* one series pulled through a DB connection; fetched for the project horizon when validating or running */

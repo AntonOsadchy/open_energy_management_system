@@ -1017,6 +1017,59 @@ def test_investment_block_and_lifetime_optimisation(page):
     assert not page.errors, page.errors
 
 
+def test_grid_connection_expansion_per_direction(page):
+    """The grid block's max_import / max_export are its existing consumption and production capacity, ordinary fields
+    also with Variable size, which then asks for them next to each direction's CAPEX and OPEX; a direction with a max
+    expansion of 0 needs neither. The Run settings show the size per direction as existing + expansion range and the
+    lifetime optimisation reports the import capacity on the grid block. With Baseline "none" it is not compared: the
+    Sizing tab shows the lifetime cost instead of NPV / IRR / payback."""
+    page.drag_and_drop(".pal-item.bus", "#drawflow", target_position={"x": 500, "y": 300})
+    page.drag_and_drop('.pal-item[data-type="GridConnection"]', "#drawflow", target_position={"x": 260, "y": 120})
+    page.drag_and_drop('.pal-item[data-type="Demand"]', "#drawflow", target_position={"x": 760, "y": 420})
+    grid = page.evaluate("""() => {
+        const id = k => String(allNodes().find(n => k(n.data)).id);
+        const bus = id(d => d.kind === "bus"), grid = id(d => d.type === "GridConnection"), dem = id(d => d.type === "Demand");
+        connectByName([grid, "link"], [bus, "port"]);
+        connectByName([dem, "in"], [bus, "port"]);
+        const g = Blocks.editor.getNodeFromId(grid); g.data.params.import_price = 50; Blocks.editor.updateNodeDataFromId(grid, g.data);
+        const n = Blocks.editor.getNodeFromId(dem); n.data.params.profile = 0.5; Blocks.editor.updateNodeDataFromId(dem, n.data);
+        return grid;
+    }""")
+    _set(page, "#set-days", "1")
+    page.evaluate(f"Panel.show('{grid}')")
+    assert page.get_attribute('#panel [data-p="max_import"]', "placeholder") == "no limit"
+    assert "consumption and production capacity" in page.inner_text("#panel")
+    page.click('#panel label:has([data-size-mode="variable"])')
+    page.wait_for_selector('#panel [data-sz="expansion_max_import"]')
+    text = page.inner_text("#panel")
+    assert "Missing CAPEX import, OPEX import, CAPEX export, OPEX export, max_import (existing, 0 if none), " \
+           "max_export (existing, 0 if none)" in text
+    assert page.is_visible('#panel [data-p="max_import"]')             # the existing capacity stays editable
+    page.fill('#panel [data-p="max_import"]', "0.6")
+    page.dispatch_event('#panel [data-p="max_import"]', "change")
+    for f, v in (("capex_import", "1"), ("opex_import", "0"), ("expansion_max_import", "1"), ("expansion_max_export", "0")):
+        page.fill(f'#panel [data-sz="{f}"]', v)
+        page.dispatch_event(f'#panel [data-sz="{f}"]', "change")
+    assert "Missing" not in page.inner_text("#panel")                  # export is not expanded: nothing else needed
+    assert page.get_attribute('#panel [data-sz="capex_export"]', "placeholder") == "not needed"
+    assert page.evaluate(f"Blocks.sizeRange(Blocks.editor.getNodeFromId('{grid}'))") == "import 0.60 + 0.00–1.00 MW"
+    inv = page.evaluate("Blocks.addInvest(40, 40)")
+    page.evaluate(f"Panel.show({inv})")
+    _set(page, '#panel [data-k="baseline"]', "__none__")
+    assert page.evaluate("[Blocks.investNode().data.no_reference, Blocks.investNode().data.baseline]") == [True, None]
+    assert "no baseline" in page.inner_text(f"#node-{inv}")
+
+    _start_run(page)
+    page.wait_for_function("Results.summary !== null", timeout=60000)
+    assert page.evaluate("Results.summary.sizing.sizes.map(s => [s.component, s.quantity, s.min, s.max])") == [
+        ["grid", "import", 0.6, 1.6]]
+    assert page.evaluate("Results.summary.sizing.kpis.compared") is False
+    page.evaluate("Results.renderSizing()")
+    assert "Lifetime cost" in page.inner_text("#sz-kpis") and "NPV of the investment" not in page.inner_text("#sz-kpis")
+    assert "🔍" in page.inner_text(f"#node-{grid} .blk-badges")
+    assert not page.errors, page.errors
+
+
 def test_stop_a_running_run(page):
     """The run shows in the top bar while the canvas stays usable; ■ Stop ends a long run (a year at 15 min): the
     progress closes, the Run button comes back and no results are shown."""
@@ -1078,7 +1131,8 @@ def test_project_tree_shows_variants_under_their_project(page):
     page.keyboard.press("Escape")
     inv = page.evaluate("Blocks.addInvest(40, 40)")                     # the other variants can be the baseline
     page.evaluate(f"Panel.show({inv})")
-    assert page.eval_on_selector_all('#panel [data-k="baseline"] option', "os => os.map(o => o.value)") == ["", "plant"]
+    assert page.eval_on_selector_all('#panel [data-k="baseline"] option', "os => os.map(o => o.value)") == [
+        "", "__none__", "plant"]
     _set(page, '#panel [data-k="baseline"]', "plant")                    # (shown in Lifetime optimisation mode)
     assert page.evaluate("Blocks.investNode().data.baseline") == "plant"
     page.evaluate(f"Blocks.editor.removeNodeId('node-{inv}')")

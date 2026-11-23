@@ -67,35 +67,59 @@ const Results = {
     const pbGoal = kind => goal(hurdle(kind), `≤ ${(hurdle(kind)?.target || 0).toFixed(1)} years`);
     const sizes = sz.sizes.map(s => `<tr><td>${esc(s.component)}</td><td>${esc(s.quantity)}</td><td class="num"><b>${fmt(s.value)}</b> ${esc(s.unit)}</td>
       <td class="num">${fmt(s.min)}–${s.max === null || s.max === undefined ? "∞" : fmt(s.max)}</td></tr>`).join("");
-    document.getElementById("sz-kpis").innerHTML = `<div class="sz-tiles">
+    const ss = k.self_sufficiency === null || k.self_sufficiency === undefined ? "" : tile("Self-sufficiency",
+      `${(100 * k.self_sufficiency).toFixed(1)} %`, "share of the electricity demand not bought from the grid",
+      `${k.self_sufficiency_reference === null || k.self_sufficiency_reference === undefined ? "" :
+        `<small class="sz-goal">without the investment ${(100 * k.self_sufficiency_reference).toFixed(1)} %</small>`}${
+        k.self_sufficiency_target === undefined ? "" : `<small class="sz-goal ${k.self_sufficiency_binding ? "binding" : "met"}">target ≥ ${
+          (100 * k.self_sufficiency_target).toFixed(0)} %${k.self_sufficiency_binding ? " · binding" : " ✓"}</small>`}`);
+    const sizeTable = `<div class="cols"><table class="kpi"><tr><th>Asset</th><th></th><th>Optimal size</th><th>Range</th></tr>${sizes}</table>
+      <div>${sz.warnings.map(w => `<div class="msg warn">${esc(w)}</div>`).join("")}</div></div>`;
+    const rows = sz.rows.map(r => Object.fromEntries(sz.columns.map((c, i) => [c, r[i]])));
+    const years = rows.map(r => r.year);
+    const layout = { margin: { t: 10, r: 20, l: 70, b: 30 }, legend: { orientation: "h", y: -0.2 }, xaxis: { title: "year", dtick: 1 },
+      yaxis: { title: "€", zeroline: true } };
+    const compared = k.compared !== false;      // no baseline ("none"): the site's own costs, not compared
+    if (compared) document.getElementById("sz-kpis").innerHTML = `<div class="sz-tiles">
         ${tile("NPV of the investment", `${fmt(k.npv)} €`, `present value at ${(100 * k.discount_rate).toFixed(1)} % of savings − OPEX − CAPEX${
           k.inflation ? ` (prices +${(100 * k.inflation).toFixed(1)} %/yr)` : ""}`)}
         ${tile("IRR", k.irr === null || k.irr === undefined ? "n/a" : `${(100 * k.irr).toFixed(1)} %`, "discount rate at which the NPV is 0", irrGoal)}
         ${tile("Payback", yrs(k.payback), "years until the cumulative net cash flow turns positive", pbGoal("payback"))}
         ${tile("Discounted payback", yrs(k.payback_discounted), "the same with discounted cash flows", pbGoal("payback_discounted"))}
         ${tile("CAPEX", `${fmt(k.capex)} €`)}
-        ${k.self_sufficiency === null || k.self_sufficiency === undefined ? "" : tile("Self-sufficiency",
-          `${(100 * k.self_sufficiency).toFixed(1)} %`, "share of the electricity demand not bought from the grid",
-          `<small class="sz-goal">without the investment ${(100 * (k.self_sufficiency_reference || 0)).toFixed(1)} %</small>${
-            k.self_sufficiency_target === undefined ? "" : `<small class="sz-goal ${k.self_sufficiency_binding ? "binding" : "met"}">target ≥ ${
-              (100 * k.self_sufficiency_target).toFixed(0)} %${k.self_sufficiency_binding ? " · binding" : " ✓"}</small>`}`)}
+        ${ss}
         ${tile("Savings, year 1", `${fmt(k.savings_year1)} €`, k.reference ? `operating cost of '${k.reference}' − with the investment` :
           "operating cost without the investment − with it")}
-      </div>${k.reference ? `<div class="hint">Compared with the baseline <b>${esc(k.reference)}</b> (run with the same settings).</div>` : ""}
-      <div class="cols"><table class="kpi"><tr><th>Asset</th><th></th><th>Optimal size</th><th>Range</th></tr>${sizes}</table>
-      <div>${sz.warnings.map(w => `<div class="msg warn">${esc(w)}</div>`).join("")}</div></div>`;
-    const rows = sz.rows.map(r => Object.fromEntries(sz.columns.map((c, i) => [c, r[i]])));
-    const years = rows.map(r => r.year);
-    Plotly.newPlot("sz-plot", [
+      </div>${k.reference ? `<div class="hint">Compared with the baseline <b>${esc(k.reference)}</b> (run with the same settings${
+        k.reference_sizes ? `; its own variable sizes optimised as well: ${k.reference_sizes.map(s =>
+          `${esc(s.component)} ${esc(s.quantity)} ${fmt(s.value)} ${esc(s.unit)}`).join(", ")}. CAPEX, OPEX and savings are
+          this variant's minus the baseline's` : ""}).</div>` : ""}${k.reference_reused ? `<div class="hint">The ${
+        k.reference ? "baseline" : "case without the investment"} was not solved again: its results from ${
+        esc(k.reference_reused)} were reused (same system, data and run settings).</div>` : ""}
+      ${sizeTable}`;
+    else document.getElementById("sz-kpis").innerHTML = `<div class="sz-tiles">
+        ${tile("Lifetime cost", `${fmt(k.lifetime_cost)} €`, `present value at ${(100 * k.discount_rate).toFixed(1)} % of the site's costs over ${
+          k.years} years: CAPEX + OPEX + operating cost (energy, fees, charges; revenue negative)${
+          k.inflation ? `, prices +${(100 * k.inflation).toFixed(1)} %/yr` : ""}`)}
+        ${tile("CAPEX", `${fmt(k.capex)} €`)}
+        ${tile("OPEX per year", `${fmt(k.opex_per_year)} €`, "average over the lifetime")}
+        ${tile("Operating cost, year 1", `${fmt(k.operating_cost_year1)} €`, "energy, fees and charges of the site (revenue negative)")}
+        ${ss}
+      </div><div class="hint">Not compared with a baseline (Run settings: Baseline none), so no NPV, IRR or payback:
+      the optimal sizes are the ones with the lowest lifetime cost.</div>
+      ${sizeTable}`;
+    Plotly.newPlot("sz-plot", compared ? [
       { type: "bar", name: "net cash flow €", x: years, y: rows.map(r => r.net_cash_flow),
         marker: { color: rows.map(r => (r.net_cash_flow < 0 ? "#fca5a5" : "#86efac")) } },
       { name: "cumulative €", x: years, y: rows.map(r => r.net_cash_flow_cumulative), line: { color: "#15803d", dash: "dot" } },
       { name: "cumulative discounted €", x: years, y: rows.map(r => r.discounted_cumulative), line: { color: "#1d4ed8" } },
-    ], { margin: { t: 10, r: 20, l: 70, b: 30 }, legend: { orientation: "h", y: -0.2 }, xaxis: { title: "year", dtick: 1 },
-      yaxis: { title: "€", zeroline: true } }, { responsive: true, displaylogo: false });
+    ] : [
+      { type: "bar", name: "total cost €", x: years, y: rows.map(r => r.total_cost), marker: { color: "#fca5a5" } },
+      { name: "cumulative discounted €", x: years, y: rows.map(r => r.discounted_cumulative), line: { color: "#1d4ed8" } },
+    ], layout, { responsive: true, displaylogo: false });
     const label = { price_index: "price index", discount_factor: "discount factor", operating_cost: "operating cost €", operating_cost_reference: k.reference ? `${k.reference} €` : "without investment €",
       savings: "savings €", opex: "OPEX €", capex: "CAPEX €", net_cash_flow: "net cash flow €", net_cash_flow_cumulative: "cumulative €",
-      discounted: "discounted €", discounted_cumulative: "cum. discounted €" };
+      total_cost: "total cost €", discounted: "discounted €", discounted_cumulative: "cum. discounted €" };
     document.getElementById("sz-table").innerHTML = `<table class="kpi life"><tr>${sz.columns.map(c => `<th>${esc(label[c] || c)}</th>`).join("")}</tr>${
       rows.map(r => `<tr>${sz.columns.map(c => `<td class="num">${c === "year" ? r[c] : c === "discount_factor" || c === "price_index" ? r[c].toFixed(3) : fmt(r[c])}</td>`).join("")}</tr>`).join("")}</table>
       <div class="hint">Year 0 is the investment. Operating cost includes peak and fixed charges, spread evenly over the years${

@@ -68,27 +68,35 @@ const Panel = {
   },
 
   /* PV and storages: fixed size (their own size fields) or variable size (chosen by the lifetime optimisation
-     within min/max, which then needs CAPEX and OPEX) */
+     within min/max, which then needs CAPEX and OPEX). Grid connections: the existing max_import / max_export (fields
+     below), which a variable size may expand, each direction with its own max, CAPEX and OPEX */
   sizingForm(id, d) {
-    const a = d.sizing || {}, variable = !!a.optimise, st = d.type === "Storage";
+    const a = d.sizing || {}, variable = !!a.optimise, st = d.type === "Storage", grid = d.type === "GridConnection";
     const mode = (v, label) => `<label><input type="radio" name="size-mode" data-size-mode="${v}" ${
       (v === "variable") === variable ? "checked" : ""}> ${label}</label>`;
     let html = `<fieldset><legend>Size</legend><div class="seg">${mode("fixed", "Fixed size")}${mode("variable", "Variable size")}</div>`;
-    if (!variable) return html + `<div class="hint">${st ? "Energy and power are" : "The capacity is"} set below. Variable
-      size lets a lifetime optimisation choose ${st ? "them" : "it"}.</div></fieldset>`;
+    if (!variable) return html + `<div class="hint">${grid ? `<b>max_import</b> / <b>max_export</b> below are the
+      connection's consumption and production capacity (empty = no limit). Variable size lets a lifetime optimisation
+      expand them.` : `${st ? "Energy and power are" :
+      "The capacity is"} set below. Variable size lets a lifetime optimisation choose ${st ? "them" : "it"}.`}</div></fieldset>`;
     const missing = Blocks.optimisedAssets().find(o => String(o.node.id) === String(id))?.missing || [];
     const body = Blocks.catalog.sizing[d.type].filter(f => f.name !== "optimise_size").map(f => {
-      const cost = f.name.startsWith("capex") || f.name === "opex";
+      const cost = Blocks.costFields(d.type).some(c => c.name === f.name);
+      const req = cost && Blocks.requiredCosts(d).some(c => c.name === f.name);
       const empty = [undefined, null, ""].includes(a[f.name]);
-      return `<div class="field"><label class="${cost ? "req" : ""}" title="${esc(f.help)}">${esc(f.label)}</label><span>
+      return `<div class="field"><label class="${req ? "req" : ""}" title="${esc(f.help)}">${esc(f.label)}</label><span>
         <input type="number" step="any" min="0" data-sz="${f.name}" value="${empty ? "" : a[f.name]}"
-          class="${cost && empty ? "invalid" : ""}" placeholder="${cost ? "required" : f.name.endsWith("_min") ? "0" : f.name === "duration" ? "free" : "no limit"}">
+          class="${req && empty ? "invalid" : ""}" placeholder="${req ? "required" : cost ? "not needed" : f.name.endsWith("_min") ? "0" : f.name === "duration" ? "free" : "no limit"}">
         <span class="unit">${esc(f.unit || "")}</span></span></div>`;
     }).join("");
-    return html + `<div class="hint">▶ Run → <b>Lifetime optimisation</b> chooses ${st ? "energy and power" : "the capacity"}
-      within these limits. Min sizes are what exists already: the investment is the size above them. CAPEX is paid in
-      year 0, OPEX every year. Without a max size a profitable asset may grow without limit. Discount rate and hurdles:
-      ⚙️ Run settings block.</div>${body}${missing.length ? `<div class="msg err">Missing ${missing.map(esc).join(", ")}</div>` : ""}</fieldset>`;
+    const hint = grid ? `▶ Run → <b>Lifetime optimisation</b> chooses how much consumption (import) and production
+      (export) capacity to add to the existing <b>max_import</b> / <b>max_export</b> (set below), each up to its max
+      expansion (0 keeps that direction as it is; its CAPEX and OPEX are then not needed). CAPEX (e.g. the connection
+      fee) is paid in year 0 and OPEX every year, both per MW added in that direction.` : `▶ Run → <b>Lifetime optimisation</b> chooses ${st ?
+      "energy and power" : "the capacity"} within these limits. Min sizes are what exists already: the investment is the
+      size above them. CAPEX is paid in year 0, OPEX every year.`;
+    return html + `<div class="hint">${hint} Without a max size a profitable asset may grow without limit. Discount rate
+      and hurdles: ⚙️ Run settings block.</div>${body}${missing.length ? `<div class="msg err">Missing ${missing.map(esc).join(", ")}</div>` : ""}</fieldset>`;
   },
 
   converterForm(d, wired) {
@@ -220,6 +228,7 @@ const Panel = {
       else if (inp.type === "number") d.params[k] = inp.value === "" ? null : parseFloat(inp.value);
       else d.params[k] = inp.value === "" ? null : inp.value;
       save(d);
+      if (d.type === "GridConnection" && d.sizing?.optimise && k.startsWith("max_")) this.show(id);   // missing fields
     }));
     // converter
     el.querySelectorAll("[data-conv]").forEach(inp => inp.addEventListener("change", () => {
@@ -297,24 +306,28 @@ Object.assign(Panel, {
 
   /* Run settings block: every setting of a run (#run-settings, see RunSettings: mode, period, resolution, time zone,
      compute), the CO₂ cap, the discount rate and inflation, and the lifetime optimisation's targets (the sizes to optimise
-     are switched to variable size on the PV and storage blocks themselves). ▶ Run then only starts the run. */
+     are switched to variable size on the PV, storage and grid blocks themselves). ▶ Run then only starts the run. */
   investForm(id, d) {
     RunSettings.park();
     const rows = Blocks.optimisedAssets().map(({ node, missing }) => `<div class="${missing.length ? "inv-missing" : ""}">
       <a href="#" data-goto="${node.id}">${esc(node.data.name)}</a>${missing.length ? ` - missing ${missing.map(esc).join(", ")}` : ""}</div>`).join("");
     this.el.innerHTML = `<h2>⚙️ Run settings</h2><div class="doc">Everything a run uses, set before ▶ Run (which only starts
       it). Not wired, one per project; saved with the project.</div>
-      <fieldset class="rs-opt"><legend>Lifetime optimisation</legend><div class="doc">Switch a PV or storage block to
-      <b>Variable size</b> in its own settings (with its size limits, CAPEX and OPEX). The run maximises the net present
-      value of the investment over the lifetime and reports NPV, IRR and payback.</div>
-      ${rows ? `<div class="hint">Variable size:</div>${rows}` : `<div class="hint">No PV or storage has a variable size.</div>`}
-      ${row("Baseline", `<select data-k="baseline"><option value="">this model without the new assets</option>${
-        ProjectTree.family(App.settings().name).map(m => `<option ${m.name === d.baseline ? "selected" : ""}>${esc(m.name)}</option>`).join("")}${
-        d.baseline && !ProjectTree.family(App.settings().name).some(m => m.name === d.baseline) ?
+      <fieldset class="rs-opt"><legend>Lifetime optimisation</legend><div class="doc">Switch a PV, storage or grid
+      block to <b>Variable size</b> in its own settings (with its size limits, CAPEX and OPEX; a grid connection's
+      import and export capacity are expanded each on its own). The run maximises the net present value of the investment over the
+      lifetime and reports NPV, IRR and payback.</div>
+      ${rows ? `<div class="hint">Variable size:</div>${rows}` : `<div class="hint">No PV, storage or grid has a variable size.</div>`}
+      ${row("Baseline", `<select data-k="baseline"><option value="" ${!d.baseline && !d.no_reference ? "selected" : ""}>this model without the new assets</option>
+        <option value="${NO_BASELINE}" ${d.no_reference ? "selected" : ""}>none: sizes and lifetime cost only</option>${
+        ProjectTree.family(App.settings().name).map(m => `<option ${!d.no_reference && m.name === d.baseline ? "selected" : ""}>${esc(m.name)}</option>`).join("")}${
+        d.baseline && !d.no_reference && !ProjectTree.family(App.settings().name).some(m => m.name === d.baseline) ?
           `<option selected>${esc(d.baseline)}</option>` : ""}</select>`)}
       <div class="hint">The case the investment is measured against (savings, NPV, IRR, payback): this model with every
       variable size at its minimum, or another saved variant of the project (e.g. the site as it is), run with these
-      settings.${Account.user ? "" : " Log in to choose a variant."}</div>
+      settings. It does not change the optimal sizes: <b>none</b> skips it (one solve instead of two; also when the
+      site cannot run without the investment) and reports the sizes and the present value of the lifetime cost, without
+      NPV, IRR, payback or hurdles.${Account.user ? "" : " Log in to choose a variant."}</div>
       </fieldset>
       <div id="rs-slot"></div>
       <fieldset class="rs-econ"><legend>Economics</legend>
@@ -357,8 +370,10 @@ Object.assign(Panel, {
         save(nd => { nd[k] = e.target.value === "" ? null : parseFloat(e.target.value); }));
     this.el.querySelector('[data-k="payback_kind"]').addEventListener("change", e =>
       save(nd => { nd.payback_kind = e.target.value; }));
-    this.el.querySelector('[data-k="baseline"]').addEventListener("change", e =>
-      save(nd => { nd.baseline = e.target.value || null; }));
+    this.el.querySelector('[data-k="baseline"]').addEventListener("change", e => save(nd => {
+      nd.no_reference = e.target.value === NO_BASELINE;
+      nd.baseline = nd.no_reference ? null : e.target.value || null;
+    }));
     this.el.querySelectorAll("[data-goto]").forEach(a => a.addEventListener("click", e => {
       e.preventDefault(); this.show(a.dataset.goto);
     }));
@@ -651,6 +666,9 @@ Object.assign(Panel, {
 });
 
 /* size fields of a component that the lifetime optimisation chooses when the block is switched to variable size */
+/* the Baseline choice "none" of the Run settings block (stored as no_reference: no case to compare with) */
+const NO_BASELINE = "__none__";
+
 const SIZE_FIELDS = { Producer: ["capacity"], Storage: ["e_max", "p_ch_max", "p_dis_max"] };
 
 function row(label, input) { return `<div class="field"><label>${label}</label>${input}</div>`; }

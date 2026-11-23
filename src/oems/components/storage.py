@@ -180,6 +180,10 @@ class Storage(Component):
         self.r.e_max, self.r.p_ch_max, self.r.p_dis_max = e, p, p
         return {"energy": (e, "MWh"), "power": (p, "MW")}
 
+    def size_limits(self):
+        r = self.r
+        return {"energy": (r.e_size_min, r.e_size_max), "power": (r.p_size_min, r.p_size_max)}
+
     def states(self, blk):
         return {"e": blk.e}
 

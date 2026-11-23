@@ -189,6 +189,15 @@ class BuildContext:
             return 0.0
         return pyo.quicksum(float(c[t]) * view[int(t)] for t in nz)
 
+    def years(self) -> float:
+        """Weight of a cost charged per year (EUR/yr): the annuity in a lifetime run (every year discounted and
+        inflated, like OPEX); otherwise the years the horizon stands for, pro rata (sum of w * dt / 365 days; a
+        calendar year of 365 or 366 days is exactly 1)."""
+        if self.horizon is not None:
+            return float(self.horizon.annuity)
+        days = float(np.sum(self.cw * self.dt)) / 24.0
+        return 1.0 if any(np.isclose(days, d) for d in (365.0, 366.0)) else days / 365.0
+
     def prev(self, t: int):
         return t - 1 if t > 0 else None
 
@@ -257,6 +266,11 @@ class Component(Resolvable, ABC):
     def solved_sizes(self, blk: pyo.Block) -> dict[str, tuple[float, str]]:
         """Optimised sizes after the solve, ``{quantity: (value, unit)}``; also writes them into ``self.r`` so the
         reporting works as for a fixed size. Empty unless the size was optimised."""
+        return {}
+
+    def size_limits(self) -> dict[str, tuple[float, float | None]]:
+        """Range of each optimised size quantity of ``solved_sizes``, ``{quantity: (min, max)}`` (max None = no
+        limit); the min is what exists already."""
         return {}
 
     def check_sizing(self, grid: TimeGrid, costs: dict[str, object]) -> None:

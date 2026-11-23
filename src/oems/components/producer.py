@@ -117,5 +117,8 @@ class Producer(Component):
         self.r.capacity, self.r.available = size, size * self.r.cf
         return {"capacity": (size, "MW")}
 
+    def size_limits(self):
+        return {"capacity": (self.r.capacity_min, self.r.capacity_max)}
+
     def states(self, blk):
         return {"curtailment": blk.curtailment} if self.curtailable else {}

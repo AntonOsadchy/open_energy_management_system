@@ -15,7 +15,7 @@ Browser tests need `pip install playwright && python -m playwright install chrom
 6. the emission accounting variables `m.E` equal `sum(factor * flow * dt * weight)`.
 
 
-**260 test functions.**
+**295 test functions.**
 
 
 ## Unit tests
@@ -199,6 +199,11 @@ Validation: grid connection and tariffs against hand-calculated costs.
 | `test_unlimited_grid_with_export_above_import_cost_is_rejected` | Unlimited import and export with an export price above the import cost would let the model buy and sell without bound: validation stops it with a clear message (limits make it a normal, bounded case). |
 | `test_storage_with_nothing_to_discharge_into_is_warned` | A battery alone behind a grid without an export price can only charge: validation says why it stays idle; an export price (or a demand on the bus) removes the warning. |
 | `test_curtailment_can_be_switched_off` *(parametrized: 'curtailable, cost')* | PV [2, 0] MW, 1 MW load, import 10 EUR/MWh, export pays nothing but costs a 5 EUR/MWh fee. Allowed to curtail, the 1 MWh PV surplus is curtailed: cost = 10 (second hour). Not allowed, the surplus must be exported: cost = 10 + 5 = 15 EUR, and the producer has no curtailment state. |
+| `test_capacity_fees_per_direction` *(parametrized: 'max_export, export_part')* | 48 h. Import capacity fee 36,500 EUR/MW/yr on the 2 MW consumption capacity: 2 * 36,500 * 2 / 365 = 400 EUR. Export capacity fee 73,000 EUR/MW/yr on the production capacity, here a 0.5 MW feed-in limit: 0.5 * 73,000 * 2 / 365 = 200 EUR; import only (max_export 0): nothing. Both are NETWORK costs on top of the 50 EUR/MWh import fee (1 MW * 48 h * 50 = 2400 EUR); the energy cost (10 EUR/MWh) is unaffected. |
+| `test_capacity_fees_over_a_calendar_year_are_charged_once` | A leap year (366 days, 8784 h) is one year: 1.5 MW * (20,000 + 10,000) EUR/MW/yr = 45,000 EUR, not 366/365 of it. |
+| `test_capacity_fee_needs_a_capacity_in_its_direction` | The fee is per MW of capacity in its direction: without max_import (no limit) validation says so; with it, 3 MW * 8760 EUR/MW/yr for 2 h = 6 EUR. |
+| `test_max_import_and_export_limit_each_direction` *(parametrized: 'limits, imported, exported, objective')* | A connection of 1 MW each way. Hours 1-2: 2 MW demand, grid at 10 EUR/MWh, the rest from a genset at 100. Hours 3-4: 3 MW of PV, export paid 50 EUR/MWh (import 60). Lowering max_import or max_export limits that direction only. |
+| `test_exclusive_needs_finite_limits` | exclusive needs finite limits in both directions (max_import and max_export); without them it is an error. |
 
 ### `validation/test_lifetime.py`
 
@@ -255,6 +260,7 @@ Validation: one-shot lifetime capacity optimisation (oems.sizing.optimise_lifeti
 | `test_power_capex_and_fixed_duration` | Power costs 100,000 EUR/MW and E = 2 h x P: 1 MWh needs 0.5 MW; the battery then charges 0.5 MW for an hour and can only fill half of it, so a 1 MWh / 0.5 MW battery saves 2 * 90 * 0.5 per base period. |
 | `test_pv_is_sized_to_cover_the_expensive_hours_and_stops_at_its_maximum` | PV cf 0.5 in the two 100-EUR hours: 2 MW covers the 1 MW demand there (saving 2 * 100 per MW of demand and base period); a limit of 1 MW binds and is reported. |
 | `test_reference_case_keeps_a_minimum_size_and_counts_only_the_increment` | A minimum of 0.5 MWh / 0.5 MW (what exists already) is in both cases: the investment is the extra 0.5 MWh. |
+| `test_a_baseline_system_is_the_reference_of_the_cash_flows` | lifetime.reference: another system (here the site with a 0.5 MWh battery it already has) is the case without the investment, solved on the sized model's horizon (its own time section is replaced). The sizes do not change (1 MWh, 700,000 EUR); the savings are measured against the baseline: 394,200 - 0.5 * 394,200 = 197,100 EUR a year, so NPV = 2 * 197,100 - 700,000. |
 | `test_capex_and_opex_are_required_when_the_size_is_optimised` | Capex and opex are required when the size is optimised. |
 | `test_an_optimised_size_needs_a_lifetime_run` | An optimised size needs a lifetime run. |
 | `test_a_fixed_size_storage_still_requires_its_size` | A fixed size storage still requires its size. |
@@ -276,6 +282,21 @@ Validation: one-shot lifetime capacity optimisation (oems.sizing.optimise_lifeti
 | `test_a_self_sufficiency_target_builds_what_it_takes_and_no_more` | A self sufficiency target builds what it takes and no more. |
 | `test_without_a_target_the_unprofitable_pv_is_not_built` | Without a target the unprofitable pv is not built. |
 | `test_an_unreachable_self_sufficiency_is_explained` | An unreachable self sufficiency is explained. |
+| `test_grid_is_expanded_when_the_savings_beat_the_capex` | CAPEX 1,000,000 EUR/MW < 1,576,800 of savings: the import capacity grows from 1 to the 2 MW of demand (more saves nothing), NPV 576,800. CAPEX is paid on the MW added only; the reported size is the import capacity after it. Export (max expansion 0) is not sized and needs no CAPEX or OPEX. |
+| `test_grid_is_not_expanded_when_the_capex_exceeds_the_savings` | Grid is not expanded when the capex exceeds the savings. |
+| `test_grid_expansion_opex_moves_the_break_even` *(parametrized: 'opex, added')* | CAPEX 1,000,000 + 2 years of OPEX per MW added against 1,576,800 of savings: 300,000/yr -> -23,200 per MW, not built; 280,000/yr -> +16,800 per MW, built. |
+| `test_grid_expansion_at_its_maximum_is_flagged` | Grid expansion at its maximum is flagged. |
+| `test_import_and_export_are_expanded_each_by_its_own_capex` *(parametrized: 'capex_import, capex_export, imp, exp, npv')* | 1 MW each way today. Hours 1 and 3: 2 MW demand, grid at 60 EUR/MWh, a genset at 100 for the rest; hours 2 and 4: 3 MW of PV, export paid 50. Over 2 years each MW of import capacity added saves 40 * 4380 * 2 = 350,400 EUR, each MW of export capacity earns 50 * 4380 * 2 = 438,000 EUR. Each direction is built when its own CAPEX is lower: import +1 MW at 300,000 (export at 500,000 is not worth it), or export +2 MW at 400,000 (import at 400,000 is not). |
+| `test_grid_expansion_errors` *(parametrized: 'change, msg')* | Grid expansion errors. |
+| `test_capacity_fees_decide_the_grid_expansion` *(parametrized: 'fee, expansion')* | Import fee 800,000 < 876,000 saved per MW and year: the import capacity is expanded by the 1 MW still bought from the backup, saving 76,000 EUR every year; fee 900,000 > 876,000: no expansion. Both fees are NETWORK costs, every year discounted at 10 % (annuity 1/1.1 + 1/1.1^2), each on its direction's capacity after the expansion: import 1 MW + the expansion, export the existing 1 MW (not expanded: nothing to export). |
+| `test_reference_case_that_cannot_run_is_explained` | 2 MW demand, 1 MW of import and no genset: the sized model expands the import by 1 MW, but the reference case (the same model with no expansion) cannot supply the demand. The error says so and how to fix it; with a baseline variant that can run (2 MW of import today) the run solves. |
+| `test_lifetime_optimisation_without_a_reference_case` | lifetime.compare false: one solve, no reference case. Here the site cannot run without the expansion (no genset), which fails when compared with "this model without the new assets". The expansion to the 2 MW of demand is reported with the present value of the site's lifetime cost instead of NPV / IRR / payback: undiscounted, 2 MW * 8760 h * 10 EUR/MWh = 175,200 per year of import, + 10,000 OPEX per year, + 1,000,000 CAPEX; the yearly cost table adds up to it (= the run's total cost). |
+| `test_the_reference_case_does_not_change_the_optimal_sizes` *(parametrized: 'rate')* | The same battery and grid sizing with and without a reference case: minimising the lifetime cost is the same as maximising the NPV against any fixed case, so only the reported figures differ (also discounted, with inflation: the table's discounted total cost still adds up to the lifetime cost). |
+| `test_hurdles_need_a_reference_case` | Hurdles need a reference case. |
+| `test_a_baseline_with_variable_sizes_is_compared_at_its_optimum` | Two investment options for a 2 MW demand every other hour ([0, 2, 0, 2]) behind a 1 MW connection: the baseline variant expands the grid (CAPEX 1,000,000 EUR/MW: +1 MW), this variant adds a lossless battery instead (300,000 EUR/MWh: 1 MWh, charged in the empty hours). The baseline's own variable size is optimised, not pinned to its minimum (that would leave it unable to supply the demand): both import the same energy, so the NPV of the battery over the grid expansion is the CAPEX difference, 1,000,000 - 300,000. |
+| `test_a_stored_reference_case_is_not_solved_again` *(parametrized: 'hurdles')* | With a ReferenceCache the reference case is solved once: the second run solves only the sized model and gives the same sizes, cash flows and KPIs (also with a hurdle, whose bound comes from the stored case). Another variant with the same baseline reuses it too; a change of the baseline (its price) or of the run settings (the discount rate) is another case and is solved. |
+| `test_a_changed_data_file_is_another_reference_case` | The stored case is keyed by the content of the data files the reference reads, not by their names. |
+| `test_hurdles_out_of_reach_for_a_site_that_needs_the_investment_are_named` | The battery variant of the two-option case above cannot run without its battery. At 2,000,000 EUR/MWh it costs 1,000,000 more than the baseline's grid expansion and saves nothing, so a minimum IRR cannot be met while the demand still has to be covered: the error names the hurdle instead of an unexplained infeasible model. |
 
 ### `validation/test_storage.py`
 
@@ -341,10 +362,12 @@ Integration: UI backend (FastAPI) - catalog, datasets, graph translation, valida
 | `test_dataset_upload_detects_resolution` *(parametrized: 'freq')* | An uploaded CSV is parsed, its resolution (1h / 15min) detected and a sparkline preview returned. |
 | `test_bad_csv_rejected` | A CSV without a datetime column is rejected with HTTP 400. |
 | `test_graph_to_config_maps_wires` | Energy wires set the components' bus fields, data wires become `{series: dataset:column}` references, days x resolution gives the step count. |
+| `test_note_blocks_are_ignored_by_the_run` | A note block only holds text: the config is the same with or without it. |
 | `test_graph_errors_are_keyed_by_node` | Storage ports wired to two different buses, and an unconnected demand, are reported per node. |
 | `test_port_wires_take_their_direction_from_the_port` | Energy wires have no direction: component port -> bus port is an inflow or outflow by the port's meaning, a `link` port is both, and an unknown port is an error. |
 | `test_converter_ports_take_direction_from_its_definition` | A converter's in/out keys decide the direction of its port wires, even when both go to one bus side. |
 | `test_legacy_supply_withdraw_wires_still_map` | Graphs from older projects (component -> bus 'supply', bus 'withdraw' -> component) give the same config. |
+| `test_legacy_capacity_fee_becomes_the_import_capacity_fee` *(parametrized: 'params, fee')* | Grid blocks saved with the single `capacity_fee` (before the fee per direction) still run: it becomes the import (consumption) capacity fee unless that is set already, and the old key is dropped. |
 | `test_converter_graph` | Converter connectors in1/out1 map to inputs/outputs by the wired bus; capacity follows the selection. |
 | `test_validate_endpoint_reports_missing_parameter` | A missing required parameter (storage e_max) is reported by /api/validate under the block's node id. |
 | `test_run_end_to_end` | Run via the API; the wire energies in the summary equal the flow matrix of the results. |
@@ -371,8 +394,13 @@ Integration: UI backend (FastAPI) - catalog, datasets, graph translation, valida
 | `test_investment_hurdles_go_into_the_lifetime_config` | Investment hurdles go into the lifetime config. |
 | `test_variable_size_errors` | Variable size errors. |
 | `test_lifetime_optimisation_run_end_to_end` | Lifetime optimisation run end to end. |
+| `test_grid_connection_has_a_variable_size_per_direction` | The grid block's max_import / max_export (empty = no limit) are its consumption and production capacity, with the general fields; its variable size expands each direction with its own max, CAPEX and OPEX, and a grid node switched to it becomes an optimised GridConnection in the config. |
+| `test_grid_expansion_run_end_to_end` | 0.55 MW of import capacity under a 0.4-0.6 MW load (the battery covers the peaks without an expansion), import expansion almost free, export not expanded: the run reports the import capacity as the size of the grid block, from 0.55 MW up. |
+| `test_lifetime_optimisation_without_a_baseline` | Run settings Baseline "none" (no_reference): the config has lifetime.compare false and the run reports the sizes and the lifetime cost (one solve), not NPV / IRR / payback. |
+| `test_a_baseline_is_solved_once_and_reused` | The reference case of a lifetime optimisation is stored in the workspace (reference_cases): the same run again reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV. |
 | `test_co2_cap_comes_from_the_run_settings_block` | Co2 cap comes from the run settings block. |
 | `test_a_running_local_run_can_be_stopped` | A long multi-year run (60 years of a 30-day base period, one solve each) is stopped while it runs: its worker process ends at once and the run reports 'cancelled'; stopping a finished run changes nothing. |
+| `test_lifetime_optimisation_against_a_baseline_variant` | graph.baseline (another variant's canvas) is the reference case of the investment, run with this run's settings: here the site with its existing 1 MWh battery, so the new battery saves less than against the default reference (this model without it). A baseline with errors stops the run with them. |
 
 ### `integration/test_ui_browser.py`
 
@@ -395,16 +423,23 @@ End-to-end browser test of the drag-and-drop UI (headless Chromium via Playwrigh
 | `test_daily_profile_block_is_drawn_typed_and_feeds_a_demand` | The palette's '🕒 Daily profile' places a 24-value block; dragging across its chart sets values, a table cell types one, switching to 96 values per day repeats each hour four times, and pasted values replace the day. Wired to a demand it shows as that demand's profile input and the run uses it. |
 | `test_blocks_and_palette_tiles_explain_themselves_on_hover` | Every block tile in the side bar and every block on the canvas has a tooltip saying what it does: presets their own text, plain components their type's, inputs and settings blocks theirs; a placed block shows the same text as its tile. |
 | `test_renamed_block_keeps_its_name_after_reopening` | Renaming a block in its panel changes its title on the canvas, and the title survives export / import (saving and reopening a project); a project saved while renames were lost shows each block's name again. |
+| `test_note_block_holds_text` | A Note block (Blocks tab, Notes) holds free text typed on the canvas: typing marks the project unsaved and does not delete the block, and the text and the note's size come back when the project is reopened. |
 | `test_start_hint_shows_on_an_empty_canvas_until_a_project_is_opened` | The empty canvas shows how to start; opening a project or placing a first block removes the hint. |
-| `test_saved_cases_window_with_login` | Open asks for a login, then lists only that user's cases in a window: open, rename and delete them. |
+| `test_saved_cases_window_with_login` | All projects (in the project switcher) asks for a login, then lists only that user's cases in a window: open, rename and delete them. A dot after the project name marks unsaved changes. |
 | `test_battery_cycle_limit_in_panel` | The battery block's panel has a Cycling section: Max cycles (empty = no limit) per day/week/month/year. |
 | `test_pv_curtailment_tick_box` | The PV block has an 'Allow curtailment' tick box, ticked by default; unticking it sets curtailable=false. |
-| `test_base_period_years_and_year_selector` | Run settings: a calendar base year fixes start / days (366 for 2024) and hides them; the multi-year mode shows years and the discount rate. A '📉 Degradation curve' block (the database's first profile) wires only to a battery's SoH curves; a 3-year run gets a year selector that switches the summary, the battery's SoH badge and Inspect. |
+| `test_base_period_years_and_year_selector` | Run settings live in the ⚙️ Run settings block: ▶ Run without one adds it and shows its settings instead of running; a calendar base year fixes start / days (366 for 2024) and hides them; the multi-year mode shows years and the discount rate, and the block on the canvas sums up the run. A '📉 Degradation curve' block (the database's first profile) wires only to a battery's SoH curves; a 3-year run gets a year selector that switches the summary, the battery's SoH badge and Inspect. |
 | `test_project_save_keeps_the_results` | Save stores the results on show with the project (as a saved simulation); opening the project shows them again without running. |
 | `test_investment_block_and_lifetime_optimisation` | A ⚙️ Run settings block (not wired) holds the CO₂ cap; switching the battery to Variable size (in its own panel) shows its size limits and CAPEX / OPEX there, marks its size fields and lists it in the Run settings block. ▶ Run preselects Lifetime optimisation, and Start stays disabled until CAPEX and OPEX are entered. The run shows a Sizing tab with the NPV, IRR (against its minimum-IRR hurdle) and payback, and the optimal size on the battery block. |
+| `test_grid_connection_expansion_per_direction` | The grid block's max_import / max_export are its existing consumption and production capacity, ordinary fields also with Variable size, which then asks for them next to each direction's CAPEX and OPEX; a direction with a max expansion of 0 needs neither. The Run settings show the size per direction as existing + expansion range and the lifetime optimisation reports the import capacity on the grid block. With Baseline "none" it is not compared: the Sizing tab shows the lifetime cost instead of NPV / IRR / payback. |
 | `test_stop_a_running_run` | The run shows in the top bar while the canvas stays usable; ■ Stop ends a long run (a year at 15 min): the progress closes, the Run button comes back and no results are shown. |
-| `test_project_tree_shows_variants_under_their_project` | The Blocks sidebar shows the user's projects as a tree: ⑂ Variant saves the canvas as a variant of the open project (saving that first) and switches to it; variants nest under their project, the open one is highlighted, clicking one opens it (asking first when there are unsaved changes) and ▾ folds a project's variants. |
+| `test_project_tree_shows_variants_under_their_project` | The Project tab shows the open project as a tree: ⑂ Variant saves the canvas as a variant of the open project (saving that first) and switches to it; variants nest under their project, the open one is highlighted, clicking one opens it, asking first when there are unsaved changes; ▾ folds a project's variants, and ✎ / 🗑 next to a row rename / delete it. Only the open project's whole family is listed, each with its saved runs (other projects are not); with no project open the tab is empty. |
+| `test_project_switcher` | The project name in the top bar is a switcher: its menu lists the saved projects, newest first, with the open one ticked; typing filters them and Enter opens the first match. Rename… renames the saved project. |
+| `test_untitled_project_is_named_on_first_save` | With no project open the switcher says so; saving the canvas asks for a project name first. |
 | `test_older_projects_move_their_sizing_onto_the_components` | Projects saved with the sizes to optimise in the ⚙️ Run settings block get them on the PV / storage blocks. |
+| `test_start_window_new_or_open_project` | On startup a window offers a new project or a saved one; closing it leaves the canvas with no project. |
+| `test_compare_two_variants_side_by_side` | Compare (Project tab) shows two variants side by side: a changed block is amber with the number of changed fields, a block only in one variant red (A) or green (B), the rest dimmed; clicking a block lists its fields with both values, the changed ones highlighted. The open variant is compared as it is on the canvas. |
+| `test_editing_properties_after_a_run_asks_first` | Every change of a block's properties marks the project unsaved and clears the results (they no longer match the model); with results on show it asks first: Cancel puts the field back and keeps the results, 'Save as a new variant' saves the change as a variant (the open project keeps its results), 'Change this variant' clears them. A note is not the model: typing in one keeps the results. |
 
 ### `integration/test_ui_dbsource.py`
 

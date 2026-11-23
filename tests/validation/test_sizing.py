@@ -5,7 +5,7 @@ import copy
 import pytest
 
 from oems.config import from_config
-from oems.exceptions import ValidationError
+from oems.exceptions import InfeasibleModelError, ValidationError
 from oems.sizing import hurdle_value, hurdle_weights, optimise_lifetime
 
 #: A 4-hour base period is scaled to a year: 365 days / (4 h / 24) = 2190 base periods per year.
@@ -420,3 +420,322 @@ def test_an_unreachable_self_sufficiency_is_explained():
         _self_sufficient(0.25, cap=0.5)
     with pytest.raises(ValidationError, match="not a fraction"):
         _self_sufficient(40)
+
+
+# ------------------------------------------------------------------ grid connection expansion
+def _grid_cfg(years=2, demand=2, pv=None, **grid):
+    """Existing consumption capacity of 1 MW (max_import) importing at 10 EUR/MWh, no export (max_export 0, not
+    expanded), a demand of ``demand`` MW and a genset at 100 EUR/MWh for what the grid cannot bring. Each MW of import
+    expansion replaces 1 MW of genset in every hour: it saves 90 EUR/MWh * 8760 h = 788,400 EUR per year, 1,576,800
+    over 2 undiscounted years."""
+    comps = [{"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10, "max_import": 1,
+              "max_export": 0, "optimise_size": True, "expansion_max_export": 0, "opex_import": 0, **grid},
+             {"type": "Demand", "name": "load", "bus": "el", "profile": demand},
+             {"type": "Producer", "name": "genset", "bus": "el", "profile": 5, "marginal_cost": 100}]
+    if pv is not None:
+        comps.append({"type": "Producer", "name": "pv", "bus": "el", "profile": pv})
+    return {"time": {"start": "2025-01-01", "periods": 4, "freq": "1h"},
+            "carriers": [{"name": "electricity", "kind": "electricity"}],
+            "buses": [{"name": "el", "carrier": "electricity"}], "components": comps,
+            "lifetime": {"mode": "optimise", "years": years, "discount_rate": 0.0}}
+
+
+def test_grid_is_expanded_when_the_savings_beat_the_capex():
+    """CAPEX 1,000,000 EUR/MW < 1,576,800 of savings: the import capacity grows from 1 to the 2 MW of demand (more
+    saves nothing), NPV 576,800. CAPEX is paid on the MW added only; the reported size is the import capacity after
+    it. Export (max expansion 0) is not sized and needs no CAPEX or OPEX."""
+    sr = optimise_lifetime(_grid_cfg(capex_import=1_000_000, expansion_max_import=3))
+    assert sr.sizes == [{"component": "grid", "quantity": "import", "value": pytest.approx(2, abs=1e-6),
+                         "unit": "MW", "min": 1.0, "max": 4.0}]
+    assert sr.kpis["npv"] == pytest.approx(2 * 788_400 - 1_000_000, rel=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(sr.kpis["npv_check"], rel=1e-9)
+    t = sr.table.set_index("year")
+    assert list(t["capex"]) == pytest.approx([1_000_000, 0, 0], rel=1e-6)
+    assert list(t["savings"]) == pytest.approx([0, 788_400, 788_400], rel=1e-6)
+    assert list(t["grid import MWh"]) == pytest.approx([0, 2 * 8760, 2 * 8760], rel=1e-6)
+    ref_import = sr.reference.flows.xs(("grid", "import"), level=("component", "port"), axis=1).to_numpy()
+    assert ref_import.max() == pytest.approx(1)         # the reference: the existing connection
+
+
+def test_grid_is_not_expanded_when_the_capex_exceeds_the_savings():
+    sr = optimise_lifetime(_grid_cfg(capex_import=2_000_000))
+    assert _size(sr, "grid", "import") == pytest.approx(1, abs=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(0, abs=1e-3) and sr.kpis["irr"] is None
+
+
+@pytest.mark.parametrize("opex, added", [(300_000, 0.0), (280_000, 1.0)])
+def test_grid_expansion_opex_moves_the_break_even(opex, added):
+    """CAPEX 1,000,000 + 2 years of OPEX per MW added against 1,576,800 of savings: 300,000/yr -> -23,200 per MW,
+    not built; 280,000/yr -> +16,800 per MW, built."""
+    sr = optimise_lifetime(_grid_cfg(capex_import=1_000_000, opex_import=opex))
+    assert _size(sr, "grid", "import") == pytest.approx(1 + added, abs=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(added * (1_576_800 - 2 * opex - 1_000_000), abs=1e-3)
+
+
+def test_grid_expansion_at_its_maximum_is_flagged():
+    sr = optimise_lifetime(_grid_cfg(capex_import=1_000_000, expansion_max_import=0.5))
+    assert _size(sr, "grid", "import") == pytest.approx(1.5, abs=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(0.5 * (1_576_800 - 1_000_000), rel=1e-6)
+    assert any("grid: the optimal import is at its maximum (1.5 MW)" in w for w in sr.warnings)
+
+
+@pytest.mark.parametrize("capex_import, capex_export, imp, exp, npv", [
+    (300_000, 500_000, 2.0, 1.0, 350_400 - 300_000),
+    (400_000, 400_000, 1.0, 3.0, 2 * (438_000 - 400_000)),
+])
+def test_import_and_export_are_expanded_each_by_its_own_capex(capex_import, capex_export, imp, exp, npv):
+    """1 MW each way today. Hours 1 and 3: 2 MW demand, grid at 60 EUR/MWh, a genset at 100 for the rest; hours 2 and
+    4: 3 MW of PV, export paid 50. Over 2 years each MW of import capacity added saves 40 * 4380 * 2 = 350,400 EUR, each
+    MW of export capacity earns 50 * 4380 * 2 = 438,000 EUR. Each direction is built when its own CAPEX is lower: import
+    +1 MW at 300,000 (export at 500,000 is not worth it), or export +2 MW at 400,000 (import at 400,000 is not)."""
+    cfg = _grid_cfg(demand=[2, 0, 2, 0], pv=[0, 3, 0, 3], import_price=60, export_price=50, max_export=1,
+                    expansion_max_import=3, expansion_max_export=3, capex_import=capex_import,
+                    capex_export=capex_export, opex_export=0)
+    sr = optimise_lifetime(cfg)
+    assert _size(sr, "grid", "import") == pytest.approx(imp, abs=1e-6)
+    assert _size(sr, "grid", "export") == pytest.approx(exp, abs=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(npv, rel=1e-6)
+    assert list(sr.table["capex"]) == pytest.approx([(imp - 1) * capex_import + (exp - 1) * capex_export, 0, 0])
+
+
+@pytest.mark.parametrize("change, msg", [
+    ({"max_import": None}, "an expansion of import needs the existing max_import"),
+    ({"capex_import": None}, "CAPEX import required"),
+    ({"lifetime": None}, "needs a lifetime optimisation run"),
+])
+def test_grid_expansion_errors(change, msg):
+    cfg = _grid_cfg(capex_import=1_000_000)
+    grid = cfg["components"][0]
+    for k, v in change.items():
+        if k == "lifetime":
+            cfg.pop("lifetime")
+        elif v is None:
+            grid.pop(k, None)
+    with pytest.raises(ValidationError, match=msg):
+        es, _ = from_config(cfg)
+        es.validate()
+
+
+def _grid_expansion(fee, years=2, rate=0.1):
+    """2 MW demand, a connection of 1 MW each way at 10 EUR/MWh whose import and export can be expanded (a nominal
+    CAPEX of 1 EUR/MW each) and a backup supply at 110 EUR/MWh. Each MW of import expansion saves 100 EUR/MWh * 8760 h
+    = 876,000 EUR per year, but the import capacity fee is charged on the import capacity every year. An export
+    capacity fee of 50,000 EUR/MW/yr is charged on the export capacity, which nothing needs beyond the existing 1 MW."""
+    cfg = _cfg(years=years, rate=rate)
+    cfg["components"] = [
+        {"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10, "max_import": 1, "max_export": 1,
+         "import_capacity_fee": fee, "export_capacity_fee": 50_000, "optimise_size": True,
+         "expansion_max_import": 3, "expansion_max_export": 3, "capex_import": 1, "opex_import": 0,
+         "capex_export": 1, "opex_export": 0},
+        {"type": "GridConnection", "name": "backup", "bus": "el", "import_price": 110, "max_export": 0},
+        {"type": "Demand", "name": "load", "bus": "el", "profile": 2}]
+    return optimise_lifetime(cfg)
+
+
+@pytest.mark.parametrize("fee, expansion", [(800_000, 1.0), (900_000, 0.0)])
+def test_capacity_fees_decide_the_grid_expansion(fee, expansion):
+    """Import fee 800,000 < 876,000 saved per MW and year: the import capacity is expanded by the 1 MW still bought
+    from the backup, saving 76,000 EUR every year; fee 900,000 > 876,000: no expansion. Both fees are NETWORK costs,
+    every year discounted at 10 % (annuity 1/1.1 + 1/1.1^2), each on its direction's capacity after the expansion:
+    import 1 MW + the expansion, export the existing 1 MW (not expanded: nothing to export)."""
+    sr = _grid_expansion(fee)
+    assert _size(sr, "grid", "import") == pytest.approx(1 + expansion, abs=1e-6)
+    assert _size(sr, "grid", "export") == pytest.approx(1, abs=1e-6)
+    annuity = 1 / 1.1 + 1 / 1.1**2
+    network = (fee * (1 + expansion) + 50_000 * 1) * annuity
+    assert sr.results.costs.loc["grid", "NETWORK"] == pytest.approx(network, rel=1e-6)
+    t = sr.table.set_index("year")
+    assert list(t["savings"]) == pytest.approx([0] + [(876_000 - fee) * expansion] * 2, abs=1e-3)
+
+
+def test_reference_case_that_cannot_run_is_explained():
+    """2 MW demand, 1 MW of import and no genset: the sized model expands the import by 1 MW, but the reference case
+    (the same model with no expansion) cannot supply the demand. The error says so and how to fix it; with a baseline
+    variant that can run (2 MW of import today) the run solves."""
+    cfg = _grid_cfg(capex_import=1_000_000)
+    cfg["components"] = [c for c in cfg["components"] if c["name"] != "genset"]
+    with pytest.raises(InfeasibleModelError, match="the reference case is infeasible: this model without the new "
+                                                   "assets .* cannot meet the energy balance on bus el.*baseline"):
+        optimise_lifetime(cfg)
+    baseline = copy.deepcopy(cfg)
+    baseline.pop("lifetime")
+    baseline["components"][0] = {"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10,
+                                 "max_import": 2, "max_export": 0}
+    cfg["lifetime"].update(reference=baseline, reference_name="today")
+    sr = optimise_lifetime(cfg)
+    assert _size(sr, "grid", "import") == pytest.approx(2, abs=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(-1_000_000, rel=1e-6)    # the same supply as today, for the CAPEX
+
+
+def test_lifetime_optimisation_without_a_reference_case():
+    """lifetime.compare false: one solve, no reference case. Here the site cannot run without the expansion (no
+    genset), which fails when compared with "this model without the new assets". The expansion to the 2 MW of demand
+    is reported with the present value of the site's lifetime cost instead of NPV / IRR / payback: undiscounted, 2 MW
+    * 8760 h * 10 EUR/MWh = 175,200 per year of import, + 10,000 OPEX per year, + 1,000,000 CAPEX; the yearly cost
+    table adds up to it (= the run's total cost)."""
+    cfg = _grid_cfg(capex_import=1_000_000, opex_import=10_000)
+    cfg["components"] = [c for c in cfg["components"] if c["name"] != "genset"]
+    cfg["lifetime"]["compare"] = False
+    stages = []
+    sr = optimise_lifetime(cfg, on_stage=lambda k, n, label: stages.append((k, n)))
+    assert stages == [(1, 1)] and sr.reference is None
+    assert _size(sr, "grid", "import") == pytest.approx(2, abs=1e-6)
+    k = sr.kpis
+    assert k["compared"] is False and k["npv"] is None and k["irr"] is None and k["payback"] is None
+    assert k["lifetime_cost"] == pytest.approx(1_000_000 + 2 * (175_200 + 10_000), rel=1e-6)
+    assert k["lifetime_cost"] == pytest.approx(sr.results.total_cost, rel=1e-9)
+    t = sr.table.set_index("year")
+    assert list(t["total_cost"]) == pytest.approx([1_000_000, 185_200, 185_200], rel=1e-6)
+    assert "savings" not in t and "net_cash_flow" not in t
+
+
+@pytest.mark.parametrize("rate", [0.0, 0.07])
+def test_the_reference_case_does_not_change_the_optimal_sizes(rate):
+    """The same battery and grid sizing with and without a reference case: minimising the lifetime cost is the same as
+    maximising the NPV against any fixed case, so only the reported figures differ (also discounted, with inflation:
+    the table's discounted total cost still adds up to the lifetime cost)."""
+    cfg = _cfg(years=3, rate=rate, store={"capex_energy": 300_000}, inflation=0.02)
+    cfg["components"][0].update(max_import=2, optimise_size=True, expansion_max_import=3, capex_import=50_000,
+                                opex_import=1_000, expansion_max_export=0)
+    compared = optimise_lifetime(copy.deepcopy(cfg))
+    cfg["lifetime"]["compare"] = False
+    alone = optimise_lifetime(cfg)
+    assert [(s["component"], s["quantity"]) for s in alone.sizes] == [(s["component"], s["quantity"])
+                                                                     for s in compared.sizes]
+    for a, b in zip(alone.sizes, compared.sizes, strict=True):
+        assert a["value"] == pytest.approx(b["value"], abs=1e-5)
+    assert alone.kpis["lifetime_cost"] == pytest.approx(compared.results.total_cost, rel=1e-7)
+    assert alone.table["discounted"].sum() == pytest.approx(alone.results.total_cost, rel=1e-7)
+
+
+def test_hurdles_need_a_reference_case():
+    cfg = _grid_cfg(capex_import=1_000_000)
+    cfg["lifetime"].update(compare=False, hurdles={"min_irr": 0.1})
+    with pytest.raises(ValidationError, match="hurdles .* need a case to compare with"):
+        optimise_lifetime(cfg)
+
+
+def test_a_baseline_with_variable_sizes_is_compared_at_its_optimum():
+    """Two investment options for a 2 MW demand every other hour ([0, 2, 0, 2]) behind a 1 MW connection: the
+    baseline variant expands the grid (CAPEX 1,000,000 EUR/MW: +1 MW), this variant adds a lossless battery instead
+    (300,000 EUR/MWh: 1 MWh, charged in the empty hours). The baseline's own variable size is optimised, not pinned to
+    its minimum (that would leave it unable to supply the demand): both import the same energy, so the NPV of the
+    battery over the grid expansion is the CAPEX difference, 1,000,000 - 300,000."""
+    def system(extra):
+        return {"time": {"start": "2025-01-01", "periods": 4, "freq": "1h"},
+                "carriers": [{"name": "electricity", "kind": "electricity"}],
+                "buses": [{"name": "el", "carrier": "electricity"}],
+                "components": [{"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10,
+                                "max_import": 1, "max_export": 0},
+                               {"type": "Demand", "name": "load", "bus": "el", "profile": [0, 2, 0, 2]}] + extra}
+    baseline = system([])
+    baseline["components"][0].update(optimise_size=True, expansion_max_export=0, capex_import=1_000_000,
+                                     opex_import=0)
+    cfg = system([{"type": "Storage", "name": "bess", "bus": "el", "eta_ch": 1, "eta_dis": 1, "soc_init": 0,
+                   "optimise_size": True, "e_size_max": 5, "capex_energy": 300_000, "capex_power": 0, "opex": 0}])
+    cfg["lifetime"] = {"mode": "optimise", "years": 2, "discount_rate": 0.0, "reference": baseline,
+                       "reference_name": "grid only"}
+    stages = []
+    sr = optimise_lifetime(cfg, on_stage=lambda k, n, label: stages.append(label))
+    assert stages[-1] == "baseline 'grid only'"
+    assert _size(sr, "bess", "energy") == pytest.approx(1, abs=1e-6)
+    assert sr.kpis["reference_sizes"] == [{"component": "grid", "quantity": "import",
+                                           "value": pytest.approx(2, abs=1e-6), "unit": "MW"}]
+    assert sr.kpis["capex"] == pytest.approx(300_000 - 1_000_000, rel=1e-6)    # this variant's minus the baseline's
+    assert sr.kpis["npv"] == pytest.approx(700_000, rel=1e-6)
+    assert sr.kpis["npv"] == pytest.approx(sr.kpis["npv_check"], rel=1e-9)
+
+
+# ------------------------------------------------------------------ stored reference cases
+def _counting_solve():
+    solved = []
+
+    def solve(c):
+        solved.append(c)
+        es, opts = from_config(c)
+        return es.solve(time_limit=opts.get("time_limit"), tie_break=opts.get("tie_break", 0.01))
+    return solve, solved
+
+
+@pytest.mark.parametrize("hurdles", [None, {"min_irr": 0.3}])
+def test_a_stored_reference_case_is_not_solved_again(tmp_path, hurdles):
+    """With a ReferenceCache the reference case is solved once: the second run solves only the sized model and gives
+    the same sizes, cash flows and KPIs (also with a hurdle, whose bound comes from the stored case). Another variant
+    with the same baseline reuses it too; a change of the baseline (its price) or of the run settings (the discount
+    rate) is another case and is solved."""
+    from oems.reference_cache import ReferenceCache
+    from oems.sizing import ReferenceSummary
+
+    def cfg(capex=400_000, rate=0.05, price=100):
+        c = _cfg(years=4, rate=rate, store={"capex_energy": capex, "e_size_max": 0.5},
+                 pv={"capex": 500_000, "capacity_max": 5})
+        base = _cfg()
+        base.pop("lifetime")
+        base["components"][0]["import_price"] = [10, price, 10, price]
+        c["lifetime"].update(reference=base, reference_name="today")
+        if hurdles:
+            c["lifetime"]["hurdles"] = hurdles
+        return c
+
+    cache = ReferenceCache(tmp_path / "cases")
+    solve, solved = _counting_solve()
+    first = optimise_lifetime(cfg(), solve=solve, cache=cache)
+    assert len(solved) == 2 and first.kpis["reference_reused"] is None
+    again = optimise_lifetime(cfg(), solve=solve, cache=cache)
+    assert len(solved) == 3 and isinstance(again.reference, ReferenceSummary) and again.kpis["reference_reused"]
+    assert [s["value"] for s in again.sizes] == pytest.approx([s["value"] for s in first.sizes], abs=1e-9)
+    for k in ("npv", "npv_check", "irr", "payback", "payback_discounted", "capex", "savings_year1"):
+        assert again.kpis[k] == pytest.approx(first.kpis[k], rel=1e-9), k
+    assert again.kpis.get("hurdles") == first.kpis.get("hurdles")
+    assert again.table.to_numpy() == pytest.approx(first.table.to_numpy(), rel=1e-9, abs=1e-6)
+    optimise_lifetime(cfg(capex=350_000), solve=solve, cache=cache)     # another variant, the same baseline
+    assert len(solved) == 4
+    optimise_lifetime(cfg(price=90), solve=solve, cache=cache)          # the baseline changed
+    assert len(solved) == 6
+    optimise_lifetime(cfg(rate=0.06), solve=solve, cache=cache)         # the run settings changed
+    assert len(solved) == 8
+    assert len(list((tmp_path / "cases").glob("*.json"))) == 3
+
+
+def test_a_changed_data_file_is_another_reference_case(tmp_path):
+    """The stored case is keyed by the content of the data files the reference reads, not by their names."""
+    from oems.reference_cache import ReferenceCache
+
+    def write(price):
+        (tmp_path / "p.csv").write_text("time,price\n" + "".join(
+            f"2025-01-01 0{h}:00,{p}\n" for h, p in enumerate([10, price, 10, price])))
+
+    cfg = _cfg(store={"capex_energy": 700_000})
+    cfg["datasets"] = {"p": str(tmp_path / "p.csv")}
+    cfg["components"][0]["import_price"] = {"series": "p:price"}
+    cache = ReferenceCache(tmp_path / "cases")
+    solve, solved = _counting_solve()
+    write(100)
+    optimise_lifetime(copy.deepcopy(cfg), solve=solve, cache=cache)
+    optimise_lifetime(copy.deepcopy(cfg), solve=solve, cache=cache)
+    assert len(solved) == 3
+    write(90)
+    optimise_lifetime(copy.deepcopy(cfg), solve=solve, cache=cache)
+    assert len(solved) == 5
+
+
+def test_hurdles_out_of_reach_for_a_site_that_needs_the_investment_are_named():
+    """The battery variant of the two-option case above cannot run without its battery. At 2,000,000 EUR/MWh it costs
+    1,000,000 more than the baseline's grid expansion and saves nothing, so a minimum IRR cannot be met while the
+    demand still has to be covered: the error names the hurdle instead of an unexplained infeasible model."""
+    def system(extra):
+        return {"time": {"start": "2025-01-01", "periods": 4, "freq": "1h"},
+                "carriers": [{"name": "electricity", "kind": "electricity"}],
+                "buses": [{"name": "el", "carrier": "electricity"}],
+                "components": [{"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10,
+                                "max_import": 1, "max_export": 0},
+                               {"type": "Demand", "name": "load", "bus": "el", "profile": [0, 2, 0, 2]}] + extra}
+    baseline = system([])
+    baseline["components"][0].update(optimise_size=True, expansion_max_export=0, capex_import=1_000_000,
+                                     opex_import=0)
+    cfg = system([{"type": "Storage", "name": "bess", "bus": "el", "eta_ch": 1, "eta_dis": 1, "soc_init": 0,
+                   "optimise_size": True, "e_size_max": 5, "capex_energy": 2_000_000, "capex_power": 0, "opex": 0}])
+    cfg["lifetime"] = {"mode": "optimise", "years": 2, "discount_rate": 0.0, "reference": baseline,
+                       "hurdles": {"min_irr": 0.09}}
+    with pytest.raises(InfeasibleModelError, match="meet the investment hurdles \\(IRR >= 9 %\\)"):
+        optimise_lifetime(cfg)

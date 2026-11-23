@@ -29,6 +29,7 @@ import pandas as pd
 from ..config import from_config
 from ..degradation import simulate_lifetime
 from ..exceptions import InfeasibleModelError, OEMSError, RunCancelled, ValidationError
+from ..reference_cache import ReferenceCache
 from ..schema import specs
 from ..sizing import optimise_lifetime
 from .graph import map_errors
@@ -63,7 +64,8 @@ class Run:
 
 
 class RunManager:
-    def __init__(self, keep: int = 5, processes: bool = True):
+    def __init__(self, keep: int = 5, processes: bool = True, cache_dir=None):
+        self.cache_dir = cache_dir      # stored reference cases of lifetime optimisations (oems.reference_cache)
         self.cloud_runner = None        # replaces the cloud call (tests: cloud.run_locally)
         self.processes = processes      # local runs in a worker process (False: in a thread here, cannot be stopped)
         self.runs: dict[str, Run] = {}
@@ -95,7 +97,8 @@ class RunManager:
         """Solve a local run in a worker process, mirroring its status here until it sends its results."""
         ctx = mp.get_context("spawn")
         receiver, sender = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=_worker, args=(cfg, run.name_to_node, sender), daemon=True, name=f"oems-run-{run.id}")
+        proc = ctx.Process(target=_worker, args=(cfg, run.name_to_node, sender, self.cache_dir), daemon=True,
+                           name=f"oems-run-{run.id}")
         run.status, run.process = "building", proc
         proc.start()
         sender.close()
@@ -196,20 +199,29 @@ class RunManager:
             run.progress = {"stage": k, "stages": n, "years": int(life["years"])}   # one model, not year by year
             run.message = f"{label} ({k} of {n})"
 
-        sr = optimise_lifetime(cfg, on_stage=stage)
+        sr = optimise_lifetime(cfg, on_stage=stage, cache=self._cache())
         self._sizing_done(run, sr)
+
+    def _cache(self):
+        return ReferenceCache(self.cache_dir) if self.cache_dir else None
 
     @staticmethod
     def _sizing_done(run: Run, sr):
         run.sizing, run.results = sr, sr.results
         run.status = "done"
         k = sr.kpis
-        run.message = (f"{k['years']} years, NPV {k['npv']:,.0f} EUR"
-                       + (f" vs '{k['reference']}'" if k.get("reference") else "")
-                       + (f", IRR {100 * k['irr']:.1f} %" if k["irr"] is not None else "")
-                       + (f", payback {k['payback']:.1f} years" if k["payback"] is not None else ", no payback")
+        if not k.get("compared", True):     # no reference case: the sizes and the lifetime cost
+            head = f"{k['years']} years, lifetime cost {k['lifetime_cost']:,.0f} EUR (present value, not compared)"
+        else:
+            head = (f"{k['years']} years, NPV {k['npv']:,.0f} EUR"
+                    + (f" vs '{k['reference']}'" if k.get("reference") else "")
+                    + (" (reference case reused)" if k.get("reference_reused") else "")
+                    + (f", IRR {100 * k['irr']:.1f} %" if k["irr"] is not None else "")
+                    + (f", payback {k['payback']:.1f} years" if k["payback"] is not None else ", no payback"))
+        run.message = (head
                        + (f", self-sufficiency {100 * k['self_sufficiency']:.1f} %"
-                          f" ({100 * (k.get('self_sufficiency_reference') or 0):.1f} % without the investment)"
+                          + (f" ({100 * k['self_sufficiency_reference']:.1f} % without the investment)"
+                             if k.get("self_sufficiency_reference") is not None else "")
                           if k.get("self_sufficiency") is not None else ""))
         binding = [h["name"] for h in k.get("hurdles", []) if h["binding"]]
         if k.get("self_sufficiency_binding"):
@@ -235,7 +247,7 @@ class RunManager:
                                 "parallel": n == 1}
             run.message = f"{label} · cloud" if sizing else "solving · cloud"
 
-        out = solve_remote(cfg, on_stage=stage, run=self.cloud_runner, cancel=run.cancel)
+        out = solve_remote(cfg, on_stage=stage, run=self.cloud_runner, cancel=run.cancel, cache=self._cache())
         stats = getattr(out, "cloud_stats", None) or {}
         peak = max((s.get("peak_mb") or 0) for s in stats) if isinstance(stats, list) else stats.get("peak_mb")
         where = f" (cloud, peak {peak / 1024:.1f} GB)" if peak else " (cloud)"
@@ -251,7 +263,7 @@ class RunManager:
         return self.runs.get(run_id)
 
 
-def _worker(cfg: dict, name_to_node: dict, conn) -> None:
+def _worker(cfg: dict, name_to_node: dict, conn, cache_dir=None) -> None:
     """A local run in its own process: solves ``cfg`` as :meth:`RunManager._work` does, sends ``("progress", status,
     message, progress)`` whenever they change and finally ``("final", pickled Run fields)``."""
     run = Run(id="worker", name_to_node=name_to_node, config=cfg)
@@ -267,7 +279,7 @@ def _worker(cfg: dict, name_to_node: dict, conn) -> None:
 
     reporter = threading.Thread(target=report, daemon=True)
     reporter.start()
-    RunManager(processes=False)._work(run, cfg)
+    RunManager(processes=False, cache_dir=cache_dir)._work(run, cfg)
     stop.set()
     reporter.join()
     if run.results is not None:

@@ -46,7 +46,7 @@ minimise `Σ costs` over components and categories. Every money amount is in EUR
 | Category | Source |
 |---|---|
 | ENERGY | `import_price × import energy` |
-| NETWORK | `import_fee × import` + `export_fee × export` |
+| NETWORK | `import_fee × import` + `export_fee × export` + `import_capacity_fee × import capacity` + `export_capacity_fee × export capacity` per year (capacity per direction: the highest `max_import` / `max_export` plus its expansion; pro rata for shorter runs) |
 | TAX | tax tariffs, if configured |
 | REVENUE | `−export_price × export energy` (negative cost) |
 | PEAK | `peak_charge × max import` per billing period (and capacity overrun) |

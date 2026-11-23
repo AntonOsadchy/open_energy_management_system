@@ -152,6 +152,21 @@ def test_legacy_supply_withdraw_wires_still_map():
     assert [c["bus"] for c in cfg["components"]] == ["el", "el"]
 
 
+
+@pytest.mark.parametrize("params, fee", [({"capacity_fee": 7000}, 7000),
+                                         ({"capacity_fee": 7000, "import_capacity_fee": 5000}, 5000)])
+def test_legacy_capacity_fee_becomes_the_import_capacity_fee(params, fee):
+    """Grid blocks saved with the single `capacity_fee` (before the fee per direction) still run: it becomes the
+    import (consumption) capacity fee unless that is set already, and the old key is dropped."""
+    g = {"settings": {"days": 1}, "nodes": [
+        {"id": "1", "kind": "bus", "name": "el", "carrier_kind": "electricity"},
+        {"id": "2", "kind": "component", "type": "GridConnection", "name": "dso", "params": {"max_import": 2, **params}},
+        {"id": "3", "kind": "component", "type": "Demand", "name": "load", "params": {"profile": 1}}],
+        "edges": [{"from": ["2", "link"], "to": ["1", "port"]}, {"from": ["3", "in"], "to": ["1", "port"]}]}
+    cfg, _ = graph_to_config(g, {})
+    dso = cfg["components"][0]
+    assert dso["import_capacity_fee"] == fee and "capacity_fee" not in dso and "export_capacity_fee" not in dso
+
 def test_converter_graph():
     """Converter connectors in1/out1 map to inputs/outputs by the wired bus; capacity follows the selection."""
     g = {"settings": {"days": 1}, "nodes": [
@@ -633,6 +648,80 @@ def test_lifetime_optimisation_run_end_to_end(client):
         time.sleep(0.05)
     assert st["status"] == "failed" and "OPEX required" in st["errors"]["4"][0]
 
+
+def test_grid_connection_has_a_variable_size_per_direction(client):
+    """The grid block's max_import / max_export (empty = no limit) are its consumption and production capacity, with
+    the general fields; its variable size expands each direction with its own max, CAPEX and OPEX, and a grid node
+    switched to it becomes an optimised GridConnection in the config."""
+    cat = client.get("/api/catalog").json()
+    fields = {f["name"]: f for f in next(c for c in cat["components"] if c["type"] == "GridConnection")["fields"]}
+    assert fields["max_import"]["unlimited"] and fields["max_export"]["unlimited"] and "capacity" not in fields
+    assert "expansion_max_import" not in fields
+    assert [f["name"] for f in cat["sizing"]["GridConnection"]] == [
+        "optimise_size", "expansion_max_import", "capex_import", "opex_import", "expansion_max_export", "capex_export",
+        "opex_export"]
+    g = _invest_graph("ds", {"3": {"optimise": True, "expansion_max_import": 2, "capex_import": 1e5,
+                                   "opex_import": 1000, "expansion_max_export": 0, "capex_export": ""}})
+    g["nodes"][2]["params"]["max_import"] = 1
+    dso = next(c for c in graph_to_config(g, {"ds": "ds.csv"})[0]["components"] if c["name"] == "dso")
+    assert dso | {"import_price": None, "export_price": None} == {
+        "type": "GridConnection", "name": "dso", "bus": "el", "max_export": 1, "max_import": 1, "optimise_size": True,
+        "expansion_max_import": 2, "capex_import": 1e5, "opex_import": 1000, "expansion_max_export": 0,
+        "import_price": None, "export_price": None}
+
+
+def test_grid_expansion_run_end_to_end(client):
+    """0.55 MW of import capacity under a 0.4-0.6 MW load (the battery covers the peaks without an expansion), import
+    expansion almost free, export not expanded: the run reports the import capacity as the size of the grid block,
+    from 0.55 MW up."""
+    ds = client.post("/api/datasets", files={"file": ("d.csv", _csv(n=24), "text/csv")}).json()
+    g = _invest_graph(ds["id"], {"3": {"optimise": True, "expansion_max_import": 1, "capex_import": 1,
+                                       "opex_import": 0, "expansion_max_export": 0}})
+    g["nodes"][2]["params"]["max_import"] = 0.55
+    s = client.get(f"/api/runs/{_finished_run(client, g)}/summary").json()
+    sz = s["sizing"]
+    assert [(x["component"], x["quantity"], x["node"], x["min"], x["max"]) for x in sz["sizes"]] == [
+        ("dso", "import", "3", 0.55, 1.55)]
+    assert 0.55 - 1e-9 <= sz["sizes"][0]["value"] <= 1.55 + 1e-9
+    assert sz["kpis"]["npv"] == pytest.approx(sz["kpis"]["npv_check"], rel=1e-6, abs=1e-3)
+    assert {"dso import MWh", "dso export MWh"} <= set(sz["columns"]) and "size" in s["badges"]["3"]
+
+
+
+def test_lifetime_optimisation_without_a_baseline(client):
+    """Run settings Baseline "none" (no_reference): the config has lifetime.compare false and the run reports the
+    sizes and the lifetime cost (one solve), not NPV / IRR / payback."""
+    ds = client.post("/api/datasets", files={"file": ("d.csv", _csv(n=24), "text/csv")}).json()
+    g = _invest_graph(ds["id"], {"4": {"optimise": True, "e_size_max": 4, "capex_energy": 1000, "capex_power": 100,
+                                       "opex": 10}})
+    g["nodes"][-1]["no_reference"] = True
+    cfg, _ = graph_to_config(g, {ds["id"]: "d.csv"})
+    assert cfg["lifetime"]["compare"] is False
+    run_id = _finished_run(client, g)
+    st = client.get(f"/api/runs/{run_id}").json()
+    assert "lifetime cost" in st["message"] and "NPV" not in st["message"]
+    sz = client.get(f"/api/runs/{run_id}/summary").json()["sizing"]
+    assert sz["kpis"]["compared"] is False and sz["kpis"]["npv"] is None and sz["kpis"]["lifetime_cost"] > 0
+    assert "total_cost" in sz["columns"] and "savings" not in sz["columns"]
+
+
+def test_a_baseline_is_solved_once_and_reused(client):
+    """The reference case of a lifetime optimisation is stored in the workspace (reference_cases): the same run again
+    reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV."""
+    ds = client.post("/api/datasets", files={"file": ("d.csv", _csv(), "text/csv")}).json()
+    base = _graph(ds["id"])
+    g = _sized_graph(ds["id"])
+    g["baseline"] = {"name": "site today", "nodes": base["nodes"], "edges": base["edges"]}
+    first = _finish(client, client.post("/api/runs", json=g).json())
+    again = _finish(client, client.post("/api/runs", json=g).json())
+    assert first["status"] == again["status"] == "done", (first, again)
+    assert "reused" not in first["message"] and "reference case reused" in again["message"]
+    assert again["stages"] == 1 and first["stages"] == 2
+    k1 = client.get(f"/api/runs/{first['run_id']}/summary").json()["sizing"]["kpis"]
+    k2 = client.get(f"/api/runs/{again['run_id']}/summary").json()["sizing"]["kpis"]
+    assert k1["reference_reused"] is None and k2["reference_reused"]
+    assert k2["npv"] == pytest.approx(k1["npv"], rel=1e-9) and k2["savings_year1"] == pytest.approx(k1["savings_year1"])
+    assert len(list((client.app.state.workspace / "reference_cases").glob("*.json"))) == 1
 
 def test_co2_cap_comes_from_the_run_settings_block():
     g = _graph("ds", days=1)

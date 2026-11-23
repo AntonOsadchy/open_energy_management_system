@@ -61,7 +61,7 @@ const RunSettings = {
     const optRadio = document.querySelector('input[name="run-mode"][value="optimise"]');
     optRadio.disabled = !sized.length;
     document.getElementById("run-mode-opt").title = sized.length ? "" :
-      "Switch a PV or storage block to Variable size first";
+      "Switch a PV, storage or grid block to Variable size first";
     document.getElementById("lbl-years").hidden = mode === "single";
     document.getElementById("lbl-years-text").textContent = mode === "optimise" ? "Lifetime (years)" : "Years";
     document.querySelectorAll("#panel .rs-econ").forEach(el => (el.hidden = mode === "single"));
@@ -95,18 +95,14 @@ const RunSettings = {
       html += `<div class="msg warn">Close to the cloud machine's memory: use a shorter base period.</div>`;
     let ok = true;
     if (mode === "optimise") {
-      html += `<table class="kpi"><tr><th>Optimised</th><th>Size</th><th>CAPEX / OPEX</th></tr>${sized.map(({ node, asset: a, missing }) => {
-        const st = node.data.type === "Storage";
-        const lo = Number((st ? a.e_size_min : a.capacity_min) || 0), hi = st ? a.e_size_max : a.capacity_max;
-        const range = `${fmt(lo)}–${hi === undefined || hi === null || hi === "" ? "∞" : fmt(Number(hi))} ${st ? "MWh" : "MW"}`;
-        return `<tr><td>${esc(node.data.name)}</td><td>${range}</td><td class="${missing.length ? "err-text" : ""}">${
-          missing.length ? "missing " + missing.map(esc).join(", ") : "✓"}</td></tr>`;
-      }).join("")}</table><div class="hint">Discount rate ${fmt(Number(inv ? inv.data.discount_rate || 0 : 7))} %${
+      html += `<table class="kpi"><tr><th>Optimised</th><th>Size</th><th>CAPEX / OPEX</th></tr>${sized.map(({ node, missing }) =>
+        `<tr><td>${esc(node.data.name)}</td><td>${Blocks.sizeRange(node)}</td><td class="${missing.length ? "err-text" : ""}">${
+          missing.length ? "missing " + missing.map(esc).join(", ") : "✓"}</td></tr>`).join("")}</table><div class="hint">Discount rate ${fmt(Number(inv ? inv.data.discount_rate || 0 : 7))} %${
         Number(inv?.data.inflation) ? `, inflation ${fmt(Number(inv.data.inflation))} %/yr` : ""}${
         hurdles.length ? `, hurdles ${hurdles.join(" and ")}` : ""}${selfSuff}.
         Lifetime = the years above; the base period is repeated every year.</div>`;
       ok = sized.length > 0 && sized.every(o => !o.missing.length);
-      if (!ok) html += `<div class="msg err">Enter CAPEX and OPEX for every variable-size block (in its own settings).</div>`;
+      if (!ok) html += `<div class="msg err">Fill in the missing fields of every variable-size block (CAPEX, OPEX; a grid's existing max_import / max_export) in its own settings.</div>`;
     }
     document.getElementById("run-info").innerHTML = html;
     this.ok = ok;

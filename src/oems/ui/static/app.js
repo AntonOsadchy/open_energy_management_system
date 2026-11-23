@@ -125,7 +125,7 @@ const App = {
       g.push(`<div class="pal-item tile" draggable="true" data-kind="component" data-type="${c.type}" title="${esc(c.doc)}">${tileIcon(c.icon, TILE_KIND[c.type])}${esc(c.label)}</div>`);
     }
     groups.Settings = [`<div class="pal-item tile invest" draggable="true" data-kind="invest"
-      title="Drag onto the canvas (not wired, one per project): the CO₂ cap, and which PV and storages a lifetime optimisation sizes, with their CAPEX, OPEX and the discount rate">${tileIcon("gear", "any")}Run settings</div>`];
+      title="Drag onto the canvas (not wired, one per project): the CO₂ cap, and which PV, storages and grid connections a lifetime optimisation sizes, with their CAPEX, OPEX and the discount rate">${tileIcon("gear", "any")}Run settings</div>`];
     groups.Notes = [`<div class="pal-item tile note" draggable="true" data-kind="note">${tileIcon("note", "any")}Note</div>`];
     const rank = g => { const i = GROUP_ORDER.indexOf(g); return i < 0 ? GROUP_ORDER.indexOf("Settings") - 0.5 : i; };
     document.getElementById("palette-blocks").innerHTML = Object.entries(groups).sort(([a], [b]) => rank(a) - rank(b)).map(([g, tiles]) =>

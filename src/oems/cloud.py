@@ -193,13 +193,13 @@ def _jobs(run, cancel=None):
     return session()
 
 
-def solve_remote(cfg: dict, *, base_dir: str | Path = ".", on_stage=None, run=None, cancel=None):
+def solve_remote(cfg: dict, *, base_dir: str | Path = ".", on_stage=None, run=None, cancel=None, cache=None):
     """Run ``cfg`` in the cloud; same result as locally. A lifetime optimisation sends its two models (optimal sizes,
     reference case) to two machines at once, so it takes as long as the slower one; with investment hurdles the
     reference goes first (its result bounds the sized model). ``on_stage(k, n, label)``
     reports progress; ``run(payload) -> outcome`` replaces the cloud call (tests: :func:`run_locally`); setting the
     ``cancel`` event (a ``threading.Event``) stops the machines and raises RunCancelled."""
-    from .sizing import hurdles, optimise_lifetime
+    from .sizing import compares, hurdles, optimise_lifetime
 
     life = cfg.get("lifetime") or {}
     if life and life.get("mode") != "optimise":
@@ -211,11 +211,12 @@ def solve_remote(cfg: dict, *, base_dir: str | Path = ".", on_stage=None, run=No
 
             def one(c):
                 return _unpack(call([pack(c, base_dir)])[0])
-            if hurdles(cfg):    # the sized model is bounded by the reference case's result: one after the other
-                sr = optimise_lifetime(cfg, solve=one, on_stage=on_stage)
-            else:
-                sr = optimise_lifetime(cfg, solve_both=both, on_stage=on_stage)
-            sr.cloud_stats = [sr.results.cloud_stats, sr.reference.cloud_stats]
+            # one after the other when the reference case's result bounds the sized model (hurdles); a reference
+            # case stored in ``cache`` is not solved again
+            parallel = None if hurdles(cfg) or not compares(cfg) else both
+            sr = optimise_lifetime(cfg, solve=one, solve_both=parallel, on_stage=on_stage, cache=cache,
+                                   base_dir=base_dir)
+            sr.cloud_stats = [r.cloud_stats for r in (sr.results, sr.reference) if hasattr(r, "cloud_stats")]
             return sr
         if on_stage:
             on_stage(1, 1, "solving")

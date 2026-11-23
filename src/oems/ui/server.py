@@ -39,7 +39,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
     ws.mkdir(parents=True, exist_ok=True)
     accounts = Accounts(ws)
     datasets = DatasetStore(ws)
-    runs = runs_mod.RunManager()
+    runs = runs_mod.RunManager(cache_dir=ws / "reference_cases")
     secrets = Secrets(ws)
     sims: sims_mod.SimulationStore = sims_mod.LocalSimulationStore(ws)
     app = FastAPI(title="Microgrid Sizing Tool")

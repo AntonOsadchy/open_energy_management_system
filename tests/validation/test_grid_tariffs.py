@@ -208,3 +208,78 @@ def test_curtailment_can_be_switched_off(curtailable, cost):
     assert res.total_cost == pytest.approx(cost)
     assert flow(res, "pv", "out")[0] == pytest.approx(1.0 if curtailable else 2.0)
     assert (("pv", "curtailment") in res.states.columns) is curtailable
+
+
+@pytest.mark.parametrize("max_export, export_part", [(0.5, 200.0), (0.0, 0.0)])
+def test_capacity_fees_per_direction(max_export, export_part):
+    """48 h. Import capacity fee 36,500 EUR/MW/yr on the 2 MW consumption capacity: 2 * 36,500 * 2 / 365 = 400 EUR.
+    Export capacity fee 73,000 EUR/MW/yr on the production capacity, here a 0.5 MW feed-in limit:
+    0.5 * 73,000 * 2 / 365 = 200 EUR; import only (max_export 0): nothing. Both are NETWORK costs on top of the
+    50 EUR/MWh import fee (1 MW * 48 h * 50 = 2400 EUR); the energy cost (10 EUR/MWh) is unaffected."""
+    es, el = el_system(grid_h(48))
+    es.add(oems.GridConnection("dso", el, max_import=2, max_export=max_export, import_price=10, import_fee=50,
+                               import_capacity_fee=36_500, export_capacity_fee=73_000),
+           oems.Demand("load", el, profile=1))
+    res = es.solve()
+    assert_invariants(res)
+    assert res.cost_by_category["NETWORK"] == pytest.approx(2400 + 400 + export_part)
+    assert res.cost_by_category["ENERGY"] == pytest.approx(480.0)
+
+
+def test_capacity_fees_over_a_calendar_year_are_charged_once():
+    """A leap year (366 days, 8784 h) is one year: 1.5 MW * (20,000 + 10,000) EUR/MW/yr = 45,000 EUR, not 366/365 of
+    it."""
+    es, el = el_system(grid_h(8784, start="2024-01-01"))
+    es.add(oems.GridConnection("dso", el, max_import=1.5, max_export=1.5, import_capacity_fee=20_000,
+                               export_capacity_fee=10_000),
+           oems.Demand("load", el, profile=1))
+    assert es.solve().cost_by_category["NETWORK"] == pytest.approx(45_000.0)
+
+
+def test_capacity_fee_needs_a_capacity_in_its_direction():
+    """The fee is per MW of capacity in its direction: without max_import (no limit) validation says so; with it,
+    3 MW * 8760 EUR/MW/yr for 2 h = 6 EUR."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, import_capacity_fee=8760), oems.Demand("load", el, profile=1))
+    with pytest.raises(oems.ValidationError, match="import_capacity_fee"):
+        es.validate()
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, max_import=3, import_capacity_fee=8760), oems.Demand("load", el, profile=1))
+    assert es.solve().cost_by_category["NETWORK"] == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("limits, imported, exported, objective", [
+    ({}, 1.0, 1.0, 2 * 10 + 2 * 100 - 2 * 50),
+    ({"max_export": 0.5}, 1.0, 0.5, 2 * 10 + 2 * 100 - 1 * 50),
+    ({"max_import": 0.5}, 0.5, 1.0, 1 * 10 + 3 * 100 - 2 * 50),
+])
+def test_max_import_and_export_limit_each_direction(limits, imported, exported, objective):
+    """A connection of 1 MW each way. Hours 1-2: 2 MW demand, grid at 10 EUR/MWh, the rest from a genset at 100.
+    Hours 3-4: 3 MW of PV, export paid 50 EUR/MWh (import 60). Lowering max_import or max_export limits that direction
+    only."""
+    es, el = el_system(grid_h(4))
+    es.add(oems.GridConnection("dso", el, import_price=[10, 10, 60, 60], export_price=[0, 0, 50, 50],
+                               **({"max_import": 1, "max_export": 1} | limits)),
+           oems.Demand("load", el, profile=[2, 2, 0, 0]),
+           oems.Producer("genset", el, profile=5, marginal_cost=100),
+           oems.Producer("pv", el, profile=[0, 0, 3, 3]))
+    res = es.solve(tie_break=0)
+    assert_invariants(res)
+    assert list(flow(res, "dso", "import")) == pytest.approx([imported, imported, 0, 0])
+    assert list(flow(res, "dso", "export")) == pytest.approx([0, 0, exported, exported])
+    assert res.objective == pytest.approx(objective)
+
+
+def test_exclusive_needs_finite_limits():
+    """exclusive needs finite limits in both directions (max_import and max_export); without them it is an error."""
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, max_import=1, max_export=1, exclusive=True, import_price=10,
+                               export_price=5),
+           oems.Demand("load", el, profile=0.5))
+    res = es.solve()
+    assert_invariants(res)
+    assert list(flow(res, "dso", "import")) == pytest.approx([0.5, 0.5])
+    es, el = el_system(grid_h(2))
+    es.add(oems.GridConnection("dso", el, exclusive=True), oems.Demand("load", el, profile=0.5))
+    with pytest.raises(oems.ValidationError, match="exclusive=True requires finite max_import and max_export"):
+        es.validate()

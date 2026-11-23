@@ -25,8 +25,10 @@ Settings ``base_year`` (a calendar year, or empty for a custom ``start`` / ``day
 make a multi-year run: ``config["lifetime"] = {"years": N, "discount_rate": r, "inflation": i}`` (from
 ``settings.discount_rate`` and ``settings.inflation`` in %) repeats the base year N times (see ``oems.degradation``).
 
-A PV (Producer) or storage node switched to variable size carries ``"sizing": {"optimise": true, "capex": ...,
-"opex": ..., ...}`` (the component's ``Investment`` group, see ``catalog.SIZING_FIELDS``); older projects keep these
+A PV (Producer), storage or grid connection node switched to variable size carries ``"sizing": {"optimise": true,
+"capex": ..., "opex": ..., ...}`` (the component's ``Investment`` group, see ``catalog.SIZING_FIELDS``; a grid
+connection's ``max_import`` / ``max_export`` are expanded, each with its own max, CAPEX and OPEX); older projects keep
+these
 per component node id in ``assets`` of the Run settings block, which is still read for nodes without ``sizing``.
 The Run settings block (``kind: "invest"``, not wired, at most one) holds the CO₂ cap (``co2_cap`` t, used by every
 run; older projects keep it in ``settings.co2_cap``), the discount rate (``discount_rate`` %, default 7 without the
@@ -74,7 +76,8 @@ def graph_to_config(graph: dict, datasets: dict[str, str]) -> tuple[dict, dict[s
         errors[nid].append("only one Run settings block per project")
     sized = _sized_assets(next(iter(invest.values()), None), comps, errors) if optimise else {}
     if optimise and not sized and not settings.get("baseline"):    # a baseline system need not size anything
-        errors["_global"].append("lifetime optimisation: switch at least one PV or storage to variable size")
+        errors["_global"].append("lifetime optimisation: switch at least one PV, storage or grid connection to "
+                                 "variable size")
 
     # names
     seen: dict[str, str] = {}
@@ -132,6 +135,9 @@ def graph_to_config(graph: dict, datasets: dict[str, str]) -> tuple[dict, dict[s
     for nid, c in comps.items():
         ctype = c.get("type")
         params = {k: v for k, v in (c.get("params") or {}).items() if v not in (None, "")}
+        if ctype == "GridConnection" and "capacity_fee" in params:     # before the fee per direction: on consumption
+            params.setdefault("import_capacity_fee", params.pop("capacity_fee"))
+            params.pop("capacity_fee", None)
         if not params.get("tariffs"):
             params.pop("tariffs", None)
         d: dict = {"type": ctype, "name": c.get("name"), **params, **sized.get(nid, {})}
@@ -214,6 +220,8 @@ def graph_to_config(graph: dict, datasets: dict[str, str]) -> tuple[dict, dict[s
             cfg["lifetime"]["hurdles"] = hurdles
         if block.get("min_self_sufficiency") not in (None, ""):
             cfg["lifetime"]["self_sufficiency"] = float(block["min_self_sufficiency"]) / 100
+        if block.get("no_reference"):       # Baseline "none": the sizes and the lifetime cost, no comparison
+            cfg["lifetime"]["compare"] = False
     elif years > 1:
         cfg["lifetime"] = {"years": years, "discount_rate": float(s.get("discount_rate") or 0) / 100,
                            "inflation": float(s.get("inflation") or 0) / 100}

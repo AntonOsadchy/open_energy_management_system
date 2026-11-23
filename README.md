@@ -123,7 +123,7 @@ Components (`oems.<Name>`), all usable any number of times:
 
 | Component | Ports | Purpose |
 |---|---|---|
-| `GridConnection` | `import` OUT, `export` IN | Electricity grid, gas supply, district heating; tariffs, peak charges, limits |
+| `GridConnection` | `import` OUT, `export` IN | Electricity grid, gas supply, district heating; tariffs, peak charges, import / export capacity (expandable) |
 | `Producer` | `out` OUT | PV, wind, waste heat (profile or capacity × cf), curtailable |
 | `Demand` | `in` IN | Fixed demand |
 | `FlexibleDemand` | `in` IN | Shiftable demand (deferral/advance limits, rebound, window) |
@@ -131,6 +131,16 @@ Components (`oems.<Name>`), all usable any number of times:
 | `Storage` | `charge` IN, `discharge` OUT | Battery, hot/cold tank (efficiencies, self-discharge per hour) |
 | `Converter` | `in_<bus>` IN, `out_<bus>` OUT | Any linear conversion; time-varying coefficients (COP) |
 | `ThermalZone` | `heat` IN, `cold` IN | 1R1C thermal mass kept in a temperature band (cold store, hall) |
+
+A `GridConnection`'s `max_import` / `max_export` (MW, series allowed, e.g. a feed-in limit that changes over time)
+are its consumption and production capacity; both default to no limit, `max_export: 0` makes it import only. A
+lifetime optimisation can expand each of them (see below).
+
+Fixed grid fees per direction: `import_capacity_fee` (consumption) and `export_capacity_fee` (production), €/MW/yr
+(UI: *Import / Export capacity fee*), each on that direction's capacity: the highest `max_import` / `max_export`, plus
+its expansion if optimised (so an import-only connection pays no export fee). Category NETWORK; pro rata for a run
+shorter than a year (a full calendar year, also 366 days, counts once), every year discounted and inflated in a
+lifetime run.
 
 Tariffs attach to a `GridConnection`: `EnergyCharge`, `EnergyCredit`, `PeakCharge` (billing period, window, metering
 interval), `CapacityLimit` (hard/soft), `FixedCharge`. Every component also accepts `flow_costs={port: €/MWh}`,
@@ -353,12 +363,13 @@ health. The usable energy is then SoH × `e_max` in every run and every year - s
 lifetime optimisation (where CAPEX and OPEX stay on the nominal size, so sizing accounts for the derating); power
 is unchanged and SoC is shown against the usable energy. A storage takes either curves or a fixed SoH, not both.
 
-## Lifetime capacity optimisation (PV / battery sizing)
+## Lifetime capacity optimisation (PV / battery / grid connection sizing)
 
 `oems.sizing.optimise_lifetime(cfg)` (UI: ⚙️ Run settings block + *Lifetime optimisation*; CLI: a config with
 `lifetime: {mode: optimise, years: N, discount_rate: r, inflation: i}`) chooses the sizes of components with `optimise_size` -
 PV capacity `capacity` (MW, availability = size × `cf`), storage energy `E` (MWh) and power `P` (MW, for charge and
-discharge; optionally `E = duration × P`) - within their min/max, over the **whole lifetime in one LP**:
+discharge; optionally `E = duration × P`), grid connection expansion (see below) - within their min/max, over the
+**whole lifetime in one LP**:
 
 * with `model: full`, the base period is repeated N times back to back into one chronological horizon (every input series tiled, so a
   battery's state of charge carries over from one year into the next); 15 hourly years are 131,400 steps;
@@ -381,13 +392,40 @@ To report the investment, a **reference case** is solved as well: the same horiz
 minimum (min sizes are what exists already, 0 by default). Or a **baseline** system of its own: in the UI choose
 **Baseline** in the ⚙️ Run settings block (*Lifetime optimisation*) - another saved variant of the project, e.g.
 `steel_factory` for `steel_factory_bess_pv`; it is run with the same settings (period, years, discount rate,
-inflation, CO₂ cap) and its own variable sizes at their minimum. In a config: `lifetime.reference` (a config whose
+inflation, CO₂ cap). A baseline with variable sizes of its own (e.g. a variant that only expands the grid) is optimised
+as well and compared at its optimum: CAPEX, OPEX and savings are then this variant's minus the baseline's, and the
+Sizing tab lists the baseline's sizes. In a config: `lifetime.reference` (a config whose
 `time` and `lifetime` sections are replaced by the sized one's) and optionally `lifetime.reference_name`. Per year: savings = operating cost of the reference -
 operating cost with the optimal sizes; net cash flow = savings - OPEX (year 0: - CAPEX). From these: **NPV**
 (= reference cost - optimised cost, cross-checked), **IRR** (the rate at which the NPV is 0), **payback** and
 **discounted payback** (when the cumulative cash flow turns positive, interpolated within the year). A size at its
 maximum is flagged: a larger limit may pay off more. An optimised size without a maximum can make the model
 unbounded if the asset pays off without limit (e.g. PV exporting at a profit).
+
+The reference case is **solved once and reused**: its results are stored (UI: `<workspace>/reference_cases`, one
+small JSON file per case; API: `optimise_lifetime(cfg, cache=oems.reference_cache.ReferenceCache(folder))`) under a
+key of everything they depend on - the reference system, the content of its data files, the run settings (period,
+resolution, years, discount rate, inflation, CO₂ cap, solver settings) and the model code. Later runs with the same
+reference, e.g. other variants compared with the same baseline, solve only the sized model; any change of the
+baseline, its data or the settings is a new case and is solved. The Sizing tab says when a stored case was reused.
+
+The reference case only values the optimal sizes, it does not change them. **Baseline: none** (config
+`lifetime.compare: false`) skips it: one solve instead of two, also when the site cannot run without the investment
+(e.g. a demand above today's grid connection, where the reference case is infeasible). The Sizing tab then shows the
+optimal sizes and the **lifetime cost** (present value of CAPEX + OPEX + operating cost, the objective) with a yearly
+cost table (operating cost, OPEX, CAPEX, total, discounted); no NPV, IRR, payback or investment hurdles.
+
+**Grid connection expansion** (UI: the grid block's *Size* → *Variable size*; config `optimise_size: true` on a
+`GridConnection`): import and export are expanded each on its own, so they compete directly with a battery or PV
+that would work around the limit. An expansion `x_import` (MW, 0 ≤ `x_import` ≤ `expansion_max_import`, empty = no
+limit) raises the existing `max_import` (required, 0 for a new connection) to `max_import + x_import` in every step;
+`capex_import` (€/MW, e.g. the connection fee and grid works) and `opex_import` (€/MW/yr) are paid on the MW **added**
+only. The same for export with `expansion_max_export`, `capex_export` and `opex_export`: consumption and production
+capacity can cost differently. A max expansion of 0 keeps that direction as it is (its CAPEX / OPEX are then not
+needed). The reported sizes are the import and export capacity after the expansion, each from its existing capacity;
+the reference case keeps the existing connection. The cash-flow table adds the connection's import and export per year.
+The expansions are continuous (the model stays an LP): real upgrades often come in steps (transformer sizes), so round
+the result to the next available step and check it with a fixed-size run.
 
 **Investment hurdles** (optional; Run settings block *Investment hurdles*, config
 `lifetime.hurdles: {min_irr: 0.12, max_payback: 7, payback: simple|discounted}`): the optimiser then picks the sizes

@@ -30,13 +30,16 @@ def main(argv=None) -> int:
     run.add_argument("--time-limit", type=float, default=None)
     run.add_argument("--years", type=int, default=None, help="repeat the horizon for this many years with "
                      "battery degradation (overrides lifetime.years in the config)")
-    sub.add_parser("app", help="start the drag-and-drop UI")
-    args = ap.parse_args(argv)
+    sub.add_parser("app", help="start the drag-and-drop UI (options --port, --workspace, --no-browser)",
+                   add_help=False)
+    args, rest = ap.parse_known_args(argv)
 
-    if args.cmd == "app":
+    if args.cmd == "app":       # its own options are the server's (python -m oems app --help lists them)
         from .ui.server import main as app_main
-        app_main()
+        app_main(rest)
         return 0
+    if rest:
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
     try:
         import yaml
         cfg = yaml.safe_load(args.config.read_text())
