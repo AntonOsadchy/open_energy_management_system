@@ -407,7 +407,10 @@ small JSON file per case; API: `optimise_lifetime(cfg, cache=oems.reference_cach
 key of everything they depend on - the reference system, the content of its data files, the run settings (period,
 resolution, years, discount rate, inflation, CO₂ cap, solver settings) and the model code. Later runs with the same
 reference, e.g. other variants compared with the same baseline, solve only the sized model; any change of the
-baseline, its data or the settings is a new case and is solved. The Sizing tab says when a stored case was reused.
+baseline, its data or the settings is a new case and is solved. Each run also stores its own optimum (unless it has
+hurdles or a self-sufficiency target, which constrain it), so a project already run with the same settings - on its
+own (Baseline "none") or as a variant - is not solved again when it is another variant's baseline. The Sizing tab
+says when a stored case was reused.
 
 The reference case only values the optimal sizes, it does not change them. **Baseline: none** (config
 `lifetime.compare: false`) skips it: one solve instead of two, also when the site cannot run without the investment

@@ -707,7 +707,8 @@ def test_lifetime_optimisation_without_a_baseline(client):
 
 def test_a_baseline_is_solved_once_and_reused(client):
     """The reference case of a lifetime optimisation is stored in the workspace (reference_cases): the same run again
-    reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV."""
+    reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV. The run's
+    own optimum is stored too: another variant with this one as its baseline does not solve it again."""
     ds = client.post("/api/datasets", files={"file": ("d.csv", _csv(), "text/csv")}).json()
     base = _graph(ds["id"])
     g = _sized_graph(ds["id"])
@@ -721,7 +722,12 @@ def test_a_baseline_is_solved_once_and_reused(client):
     k2 = client.get(f"/api/runs/{again['run_id']}/summary").json()["sizing"]["kpis"]
     assert k1["reference_reused"] is None and k2["reference_reused"]
     assert k2["npv"] == pytest.approx(k1["npv"], rel=1e-9) and k2["savings_year1"] == pytest.approx(k1["savings_year1"])
-    assert len(list((client.app.state.workspace / "reference_cases").glob("*.json"))) == 1
+    assert len(list((client.app.state.workspace / "reference_cases").glob("*.json"))) == 2   # baseline, own optimum
+    other = _sized_graph(ds["id"])
+    other["nodes"][3]["sizing"]["capex_energy"] = 900
+    other["baseline"] = {"name": "battery at 1000", "nodes": g["nodes"], "edges": g["edges"]}
+    third = _finish(client, client.post("/api/runs", json=other).json())
+    assert third["status"] == "done" and third["stages"] == 1 and "reference case reused" in third["message"], third
 
 def test_co2_cap_comes_from_the_run_settings_block():
     g = _graph("ds", days=1)

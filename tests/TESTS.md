@@ -15,7 +15,7 @@ Browser tests need `pip install playwright && python -m playwright install chrom
 6. the emission accounting variables `m.E` equal `sum(factor * flow * dt * weight)`.
 
 
-**295 test functions.**
+**297 test functions.**
 
 
 ## Unit tests
@@ -295,6 +295,8 @@ Validation: one-shot lifetime capacity optimisation (oems.sizing.optimise_lifeti
 | `test_hurdles_need_a_reference_case` | Hurdles need a reference case. |
 | `test_a_baseline_with_variable_sizes_is_compared_at_its_optimum` | Two investment options for a 2 MW demand every other hour ([0, 2, 0, 2]) behind a 1 MW connection: the baseline variant expands the grid (CAPEX 1,000,000 EUR/MW: +1 MW), this variant adds a lossless battery instead (300,000 EUR/MWh: 1 MWh, charged in the empty hours). The baseline's own variable size is optimised, not pinned to its minimum (that would leave it unable to supply the demand): both import the same energy, so the NPV of the battery over the grid expansion is the CAPEX difference, 1,000,000 - 300,000. |
 | `test_a_stored_reference_case_is_not_solved_again` *(parametrized: 'hurdles')* | With a ReferenceCache the reference case is solved once: the second run solves only the sized model and gives the same sizes, cash flows and KPIs (also with a hurdle, whose bound comes from the stored case). Another variant with the same baseline reuses it too; a change of the baseline (its price) or of the run settings (the discount rate) is another case and is solved. |
+| `test_a_baseline_run_on_its_own_is_reused_by_a_variant` | Running the baseline system as a lifetime optimisation of its own (no comparison) stores its optimum: a variant compared with it then solves only its own sized model, with the same KPIs as solving the baseline again. |
+| `test_an_optimum_under_hurdles_is_not_stored_as_a_baseline` | Hurdles and a self-sufficiency target constrain a run's optimum, so it is not the system's optimum as a baseline: only its reference case is stored. |
 | `test_a_changed_data_file_is_another_reference_case` | The stored case is keyed by the content of the data files the reference reads, not by their names. |
 | `test_hurdles_out_of_reach_for_a_site_that_needs_the_investment_are_named` | The battery variant of the two-option case above cannot run without its battery. At 2,000,000 EUR/MWh it costs 1,000,000 more than the baseline's grid expansion and saves nothing, so a minimum IRR cannot be met while the demand still has to be covered: the error names the hurdle instead of an unexplained infeasible model. |
 
@@ -397,7 +399,7 @@ Integration: UI backend (FastAPI) - catalog, datasets, graph translation, valida
 | `test_grid_connection_has_a_variable_size_per_direction` | The grid block's max_import / max_export (empty = no limit) are its consumption and production capacity, with the general fields; its variable size expands each direction with its own max, CAPEX and OPEX, and a grid node switched to it becomes an optimised GridConnection in the config. |
 | `test_grid_expansion_run_end_to_end` | 0.55 MW of import capacity under a 0.4-0.6 MW load (the battery covers the peaks without an expansion), import expansion almost free, export not expanded: the run reports the import capacity as the size of the grid block, from 0.55 MW up. |
 | `test_lifetime_optimisation_without_a_baseline` | Run settings Baseline "none" (no_reference): the config has lifetime.compare false and the run reports the sizes and the lifetime cost (one solve), not NPV / IRR / payback. |
-| `test_a_baseline_is_solved_once_and_reused` | The reference case of a lifetime optimisation is stored in the workspace (reference_cases): the same run again reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV. |
+| `test_a_baseline_is_solved_once_and_reused` | The reference case of a lifetime optimisation is stored in the workspace (reference_cases): the same run again reuses it instead of solving it (one stage, said in the message and the Sizing KPIs), with the same NPV. The run's own optimum is stored too: another variant with this one as its baseline does not solve it again. |
 | `test_co2_cap_comes_from_the_run_settings_block` | Co2 cap comes from the run settings block. |
 | `test_a_running_local_run_can_be_stopped` | A long multi-year run (60 years of a 30-day base period, one solve each) is stopped while it runs: its worker process ends at once and the run reports 'cancelled'; stopping a finished run changes nothing. |
 | `test_lifetime_optimisation_against_a_baseline_variant` | graph.baseline (another variant's canvas) is the reference case of the investment, run with this run's settings: here the site with its existing 1 MWh battery, so the new battery saves less than against the default reference (this model without it). A baseline with errors stops the run with them. |

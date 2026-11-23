@@ -694,7 +694,56 @@ def test_a_stored_reference_case_is_not_solved_again(tmp_path, hurdles):
     assert len(solved) == 6
     optimise_lifetime(cfg(rate=0.06), solve=solve, cache=cache)         # the run settings changed
     assert len(solved) == 8
-    assert len(list((tmp_path / "cases").glob("*.json"))) == 3
+    # three reference cases, and without hurdles each variant's own optimum (a baseline of other variants)
+    assert len(list((tmp_path / "cases").glob("*.json"))) == (3 if hurdles else 6)
+
+
+def test_a_baseline_run_on_its_own_is_reused_by_a_variant(tmp_path):
+    """Running the baseline system as a lifetime optimisation of its own (no comparison) stores its optimum: a variant
+    compared with it then solves only its own sized model, with the same KPIs as solving the baseline again."""
+    from oems.reference_cache import ReferenceCache
+
+    def system(extra):
+        return {"name": "grid only", "time": {"start": "2025-01-01", "periods": 4, "freq": "1h"},
+                "carriers": [{"name": "electricity", "kind": "electricity"}],
+                "buses": [{"name": "el", "carrier": "electricity"}],
+                "components": [{"type": "GridConnection", "name": "grid", "bus": "el", "import_price": 10,
+                                "max_import": 1, "max_export": 0, "optimise_size": True, "expansion_max_export": 0,
+                                "capex_import": 1_000_000, "opex_import": 0},
+                               {"type": "Demand", "name": "load", "bus": "el", "profile": [0, 2, 0, 2]}] + extra}
+    life = {"mode": "optimise", "years": 2, "discount_rate": 0.0}
+    baseline = system([])
+    variant = system([{"type": "Storage", "name": "bess", "bus": "el", "eta_ch": 1, "eta_dis": 1, "soc_init": 0,
+                       "optimise_size": True, "e_size_max": 5, "capex_energy": 300_000, "capex_power": 0,
+                       "opex": 0}])
+    variant["name"] = "battery"
+    variant["lifetime"] = {**life, "reference": copy.deepcopy(baseline), "reference_name": "grid only"}
+    baseline["lifetime"] = {**life, "compare": False}
+
+    cache = ReferenceCache(tmp_path / "cases")
+    solve, solved = _counting_solve()
+    optimise_lifetime(copy.deepcopy(baseline), solve=solve, cache=cache)
+    stages = []
+    sr = optimise_lifetime(copy.deepcopy(variant), solve=solve, cache=cache,
+                           on_stage=lambda k, n, label: stages.append(label))
+    assert len(solved) == 2 and sr.kpis["reference_reused"]
+    assert stages[0].startswith("optimal sizes (baseline 'grid only' reused")
+    fresh = optimise_lifetime(copy.deepcopy(variant))
+    for k in ("npv", "capex", "savings_year1"):
+        assert sr.kpis[k] == pytest.approx(fresh.kpis[k], rel=1e-9), k
+    assert sr.kpis["npv"] == pytest.approx(700_000, rel=1e-6)
+
+
+def test_an_optimum_under_hurdles_is_not_stored_as_a_baseline(tmp_path):
+    """Hurdles and a self-sufficiency target constrain a run's optimum, so it is not the system's optimum as a
+    baseline: only its reference case is stored."""
+    from oems.reference_cache import ReferenceCache
+
+    cache = ReferenceCache(tmp_path / "cases")
+    cfg = _cfg(years=4, store={"capex_energy": 400_000, "e_size_max": 0.5})
+    cfg["lifetime"]["self_sufficiency"] = 0.0
+    optimise_lifetime(cfg, cache=cache)
+    assert len(list((tmp_path / "cases").glob("*.json"))) == 1
 
 
 def test_a_changed_data_file_is_another_reference_case(tmp_path):

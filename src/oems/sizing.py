@@ -550,7 +550,8 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None, 
     ``cache`` (an ``oems.reference_cache.ReferenceCache``): the reference case is solved once and its summary stored;
     a later run with the same reference (same system, data, run settings and model code; ``base_dir`` resolves
     relative data paths) reuses it and solves the sized model only (``SizingResults.reference`` is then a
-    :class:`ReferenceSummary`).
+    :class:`ReferenceSummary`). The run's own optimum is stored as well (:func:`_store_own`), so a variant compared
+    with this system as its baseline reuses it.
     """
     from .config import from_config
 
@@ -576,6 +577,7 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None, 
             on_stage(1, 1, "sizing model")
         res = solve(cfg)
         res.release_model()
+        _store_own(cache, cfg, res, base_dir, goals, target)
         return _sizing_results(cfg, res, None)
     baseline = life.get("reference_name") or ("baseline" if life.get("reference") is not None else None)
     reference, cfg = reference_config(cfg), without_reference(cfg)
@@ -601,12 +603,14 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None, 
             on_stage(1, 1, f"optimal sizes ({what} reused, solved {stored.created})")
         res = _solve_bounded(solve, bounded(stored, stored.hz())) if goals else solve(cfg)
         res.release_model()
+        _store_own(cache, cfg, res, base_dir, goals, target)
         return _sizing_results(cfg, res, stored)
     if solve_both is not None and not goals:
         if on_stage:
             on_stage(1, 1, "optimal sizes and reference case in parallel")
         res, ref = solve_both(cfg, reference)
         store(ref)
+        _store_own(cache, cfg, res, base_dir, goals, target)
         return _sizing_results(cfg, res, ref)
     if goals:       # the hurdles are bounded by the reference case's cash flows: it goes first
         if on_stage:
@@ -625,12 +629,28 @@ def optimise_lifetime(cfg: dict, *, solve=None, on_stage=None, solve_both=None, 
     res = solve(cfg)
     res.release_model()         # before the reference is built: two lifetime models at once may not fit in memory
     gc.collect()
+    _store_own(cache, cfg, res, base_dir, goals, target)
     if on_stage:
         on_stage(2, 2, what)
     ref = _solve_reference(solve, reference, baseline)
     ref.release_model()
     store(ref)
     return _sizing_results(cfg, res, ref)
+
+
+def _store_own(cache, cfg: dict, res, base_dir, goals, target) -> None:
+    """Store the optimum of ``cfg`` (without its reference) as the reference case it is when another variant is
+    compared with it: a baseline is solved with its own sizes optimised, on the variant's horizon and run settings
+    (:func:`reference_config`), the same model as this one. Not with hurdles or a self-sufficiency target, which
+    constrain this optimum but not a baseline's."""
+    if cache is None or goals or target is not None:
+        return
+    own = copy.deepcopy(cfg)
+    own["lifetime"].pop("reference_name", None)
+    try:
+        cache.put(cache.key(own, base_dir), summarise_reference(res).to_dict(), cfg.get("name"))
+    except Exception:       # storing is a convenience: never fail the run for it  # noqa: BLE001
+        pass
 
 
 def _solve_bounded(solve, sized: dict):
